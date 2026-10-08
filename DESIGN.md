@@ -7,7 +7,7 @@ Knob is a switch you glance at, flip, and forget. Every change has to pass these
 - **Zero cognitive load.** One panel, no settings window, no menus inside menus. If a control needs explaining, it is the wrong control.
 - **State in words and color.** Every switch says what it is doing right now ("Live", "Muted", "Silent", "In use", "Not connected"). Color only reinforces the words, so it still reads for color blind users and at a glance.
 - **Instant effect.** Clicking does the thing. There is no Save, Apply, or confirm step, and every action is undone by doing it again.
-- **Feedback for every action.** The tile changes color, the menu bar knob glows or dims, and the F5 key shows a large HUD on the laptop screen, so you never wonder whether it worked.
+- **Feedback for every action.** The tile changes color and the F5 key shows a large HUD on the laptop screen, so you never wonder whether it worked.
 - **The truth comes from the system.** Mute state is read from the device each time, never from a cached flag, so the panel can't disagree with reality.
 - **Big targets.** Tiles are about 145×104 pt and rows are 38 pt tall. Everything you can click shows a hand cursor.
 - **Obvious affordances.** Rows that can be dragged show a grip (≡) and their rank number. A one-line hint sits next to each section title.
@@ -19,7 +19,6 @@ Knob is a switch you glance at, flip, and forget. Every change has to pass these
 - One accent color (dark forest green) for "this is in use", Claude orange only for the Claude voice tile, red only for "muted". Everything else is neutral grey.
 - On a notched screen the panel is black and drops straight out of the notch, so it reads as the notch growing. It opens on hover with no delay, closes 0.3 s after the pointer leaves, and never takes keyboard focus.
 - Control Center layout: big square tiles for on and off switches, then lists, then rarely changed options, then Quit.
-- The menu bar icon is a template image. It is bright when Claude voice is on and dull when it is off, with no animation.
 
 ## Resources
 
