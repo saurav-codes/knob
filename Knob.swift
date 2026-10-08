@@ -133,6 +133,10 @@ final class App: NSObject, NSApplicationDelegate {
   let voiceButton = NSButton()
   let stack = NSStackView()
   let icons = [false: menuIcon(bright: false), true: menuIcon(bright: true)]
+  var names: [String: String] {
+    get { UserDefaults.standard.dictionary(forKey: "names") as? [String: String] ?? [:] }
+    set { UserDefaults.standard.set(newValue, forKey: "names") }
+  }
 
   var isOn: Bool { FileManager.default.fileExists(atPath: flag) }
 
@@ -165,6 +169,33 @@ final class App: NSObject, NSApplicationDelegate {
     item.button?.target = self
     item.button?.action = #selector(showPopover)
 
+    // macOS switches to whatever was plugged in last; put our pick back on every device or default change.
+    for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultOutputDevice,
+                     kAudioHardwarePropertyDefaultInputDevice] {
+      var addr = address(selector)
+      AudioObjectAddPropertyListenerBlock(system, &addr, .main) { [weak self] _, _ in self?.applyPriority() }
+    }
+    applyPriority()
+  }
+
+  // Sets each default to the highest ranked connected device. Writes only on a real change,
+  // so it can't loop with CoreAudio and doesn't touch disk on every event.
+  func applyPriority() {
+    for kind in kinds {
+      let connected = kind.connected()
+      let current = kind.defaultDevice
+      var order = kind.order
+      // New devices rank last, except the current default leads on first sight so first launch changes nothing.
+      let unseen = connected.keys.filter { !order.contains($0) }.sorted { a, _ in connected[a] == current }
+      if !unseen.isEmpty {
+        order += unseen
+        kind.order = order
+        names = names.merging(unseen.map { ($0, string(connected[$0]!, kAudioObjectPropertyName) ?? $0) }) { $1 }
+      }
+      if let best = order.first(where: { connected[$0] != nil }), connected[best] != current {
+        kind.defaultDevice = connected[best]!
+      }
+    }
     refresh()
   }
 
