@@ -16,13 +16,14 @@ Knob is a switch you glance at, flip, and forget. Every change has to pass these
 ## Visual
 
 - Native AppKit, system materials, and SF Symbols, so it looks right in light and dark mode and on every macOS version.
-- One accent color (warm orange) for "this is in use or on", red only for "muted". Everything else is neutral grey.
+- One accent color (dark forest green) for "this is in use", Claude orange only for the Claude voice tile, red only for "muted". Everything else is neutral grey.
+- On a notched screen the panel is black and drops straight out of the notch, so it reads as the notch growing. It opens on hover with no delay, closes 0.3 s after the pointer leaves, and never takes keyboard focus.
 - Control Center layout: big square tiles for on and off switches, then lists, then rarely changed options, then Quit.
 - The menu bar icon is a template image. It is bright when Claude voice is on and dull when it is off, with no animation.
 
 ## Resources
 
-- Event driven only: CoreAudio property listeners and one Carbon hotkey. No timers, no polling, no background threads.
+- Event driven only: CoreAudio property listeners, one Carbon hotkey, and a tracking area over the notch. The only timer is the 2 minute port rescan, and it runs only while the panel is open.
 - Nothing is drawn or rebuilt while the panel is closed.
 - Disk writes happen only when the device order really changes.
 - The target is 0% CPU and zero wakeups while idle, and under about 35 MB of memory even after the panel has been opened.

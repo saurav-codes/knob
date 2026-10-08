@@ -4,11 +4,13 @@ A tiny macOS menu bar utility for the few audio switches you touch every day. On
 
 - **Claude voice switch.** One big button turns Claude Code's spoken replies on or off. The knob in the menu bar is bright while Claude speaks and dull while it is silent.
 - **Speaker and mic priority.** Drag your devices into the order you want. Knob always switches to the highest ranked device that is connected, so plugging in a new device never steals your audio. Speakers and microphone have separate lists, so you can keep AirPods for sound and the MacBook mic for calls. Click ⊖ on a device, such as earphones with a poor mic, and Knob never switches to it again, even when macOS does on connect. ⊕ brings it back.
+- **Open ports.** A collapsed section whose title counts what is running. Expand it to see every TCP port your own processes listen on, such as dev servers an agent started and forgot, with the folder it was started in and how long it has run. Click a row to open it in your browser, or ⏹ to stop the process. macOS services like AirPlay are hidden.
+- **Notch panel.** On a Mac with a notch, hover the notch and the same panel drops out of it. Move the pointer away and it closes. The menu bar knob still works, and is the way in on screens without a notch.
 - **Mic mute tile and F5 key.** Click the Microphone tile, or press F5 (the dictation key on Mac laptops), to mute or unmute whichever mic is in use. A large icon on the laptop screen confirms the change. A switch in the panel gives F5 back to macOS dictation.
 
 ## Lightweight by design
 
-Knob does nothing until CoreAudio reports a device change or you click it. No timers, no polling, no background threads.
+Knob does nothing until CoreAudio reports a device change or you click it. Ports are scanned with `lsof` when the panel opens and every 2 minutes while it stays open, never while it is closed.
 
 Measured on an M2 MacBook Air: 0% CPU and zero wakeups while idle, about 13 MB of memory, and no disk writes except when your device order changes.
 
