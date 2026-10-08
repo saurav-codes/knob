@@ -127,11 +127,19 @@ func menuIcon(bright: Bool) -> NSImage {
   return image
 }
 
+final class PointerButton: NSButton {
+  override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
+final class PointerTable: NSTableView {
+  override func resetCursorRects() { addCursorRect(visibleRect, cursor: .pointingHand) }
+}
+
 // One ranked device list. Drag a row to reorder, or click it to make it first.
 final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
   static let rowHeight: CGFloat = 32
   let kind: Kind
-  let table = NSTableView()
+  let table = PointerTable()
   let scroll = NSScrollView()
   let height: NSLayoutConstraint
   let onChange: () -> Void
@@ -226,7 +234,7 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
   let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
   let popover = NSPopover()
-  let voiceButton = NSButton()
+  let voiceButton = PointerButton()
   let stack = NSStackView()
   let icons = [false: menuIcon(bright: false), true: menuIcon(bright: true)]
   var lists: [DeviceList] = []
@@ -267,7 +275,7 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
       stack.setCustomSpacing(2, after: header)
       stack.setCustomSpacing(14, after: list.scroll)
     }
-    let quit = NSButton(title: "Quit", target: NSApp, action: #selector(NSApplication.terminate(_:)))
+    let quit = PointerButton(title: "Quit", target: NSApp, action: #selector(NSApplication.terminate(_:)))
     quit.bezelStyle = .inline
     stack.addArrangedSubview(quit)
     for view in [voiceButton] + lists.map(\.scroll) {
