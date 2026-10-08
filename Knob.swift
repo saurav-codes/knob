@@ -1,11 +1,12 @@
-// Knob: a tiny menu bar utility. A switch for Claude's spoken replies, plus speaker and mic priority lists.
-// The voice hook speaks only while ~/.claude/voice-reply exists.
-// Audio work runs only when CoreAudio reports a device change; nothing polls.
+// Knob: a tiny menu bar utility. A switch for Claude's spoken replies, speaker and mic priority lists,
+// and an F5 mic mute key. The voice hook speaks only while ~/.claude/voice-reply exists.
+// Audio work runs only when CoreAudio reports a device change, and the mute key is a system hotkey; nothing polls.
 import AppKit
+import Carbon.HIToolbox
 import CoreAudio
 
 let flag = NSHomeDirectory() + "/.claude/voice-reply"
-let claudeOrange = NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1)
+let accent = NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1)
 let system = AudioObjectID(kAudioObjectSystemObject)
 
 // The Claude spark: uneven rays around a center, drawn in code so the app ships no image files.
@@ -127,8 +128,130 @@ func menuIcon(bright: Bool) -> NSImage {
   return image
 }
 
+// The F5 dictation key sends HID consumer usage 0xCF. Remapping it to F20 stops dictation and lets
+// a plain Carbon hotkey catch it, which needs no Accessibility or Input Monitoring permission.
+func remapDictationKey(_ on: Bool) {
+  let mapping = on ? "[{\"HIDKeyboardModifierMappingSrc\":0xC000000CF,\"HIDKeyboardModifierMappingDst\":0x70000006F}]" : "[]"
+  let hidutil = Process()
+  hidutil.executableURL = URL(fileURLWithPath: "/usr/bin/hidutil")
+  hidutil.arguments = ["property", "--set", "{\"UserKeyMapping\":\(mapping)}"]
+  hidutil.standardOutput = FileHandle.nullDevice
+  try? hidutil.run()
+  hidutil.waitUntilExit()
+}
+
+var onMuteKey: () -> Void = {}
+
+// Big mic icon shown on the laptop screen for a moment after each mute key press.
+final class MuteHUD {
+  let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
+                      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+  let icon = NSImageView(frame: NSRect(x: 50, y: 62, width: 100, height: 100))
+  let label = NSTextField(labelWithString: "")
+  var shownAt = Date.distantPast
+
+  init() {
+    panel.isOpaque = false
+    panel.backgroundColor = .clear
+    panel.level = .screenSaver
+    panel.ignoresMouseEvents = true
+    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+    let blur = NSVisualEffectView(frame: panel.contentRect(forFrameRect: panel.frame))
+    blur.material = .hudWindow
+    blur.state = .active
+    blur.wantsLayer = true
+    blur.layer?.cornerRadius = 28
+    icon.symbolConfiguration = .init(pointSize: 76, weight: .medium)
+    label.frame = NSRect(x: 0, y: 24, width: 200, height: 26)
+    label.alignment = .center
+    label.font = .systemFont(ofSize: 20, weight: .semibold)
+    blur.addSubview(icon)
+    blur.addSubview(label)
+    panel.contentView = blur
+  }
+
+  func show(muted: Bool?) {
+    icon.image = NSImage(systemSymbolName: muted == false ? "mic.fill" : "mic.slash.fill", accessibilityDescription: nil)
+    icon.contentTintColor = muted == true ? .systemRed : .labelColor
+    label.stringValue = muted.map { $0 ? "Mic muted" : "Mic on" } ?? "Can't mute this mic"
+    // The built-in display, or the main one when the lid is closed.
+    let builtIn = NSScreen.screens.first {
+      CGDisplayIsBuiltin(($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! NSNumber).uint32Value) != 0
+    }
+    guard let screen = builtIn ?? NSScreen.main else { return }
+    panel.setFrameOrigin(NSPoint(x: screen.frame.midX - 100, y: screen.frame.minY + 120))
+    panel.alphaValue = 1
+    panel.orderFrontRegardless()
+    let stamp = Date()
+    shownAt = stamp
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+      guard let self, self.shownAt == stamp else { return } // a newer press keeps it up
+      NSAnimationContext.runAnimationGroup({ $0.duration = 0.3; self.panel.animator().alphaValue = 0 }) {
+        if self.shownAt == stamp { self.panel.orderOut(nil) }
+      }
+    }
+  }
+}
+
+final class PointerSegments: NSSegmentedControl {
+  override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
 final class PointerButton: NSButton {
   override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
+// A big square switch in the style of Control Center: icon, name, and its state in words.
+final class Tile: NSButton {
+  override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
+  convenience init(target: AnyObject, action: Selector) {
+    self.init(frame: .zero)
+    self.target = target
+    self.action = action
+    isBordered = false
+    wantsLayer = true
+    layer?.cornerRadius = 16
+    imagePosition = .imageAbove
+    heightAnchor.constraint(equalToConstant: 104).isActive = true
+  }
+
+  // fill nil means the switch is in its resting state.
+  func show(image: NSImage, title: String, state: String, fill: NSColor?) {
+    let ink: NSColor = fill == nil ? .labelColor : .white
+    // Draw every icon on the same canvas so both tiles line up.
+    let box = NSSize(width: 34, height: 34)
+    let symbol = image
+    let tinted = NSImage(size: box, flipped: false) { rect in
+      let s = symbol.size
+      symbol.draw(in: NSRect(x: (rect.width - s.width) / 2, y: (rect.height - s.height) / 2, width: s.width, height: s.height))
+      ink.set()
+      rect.fill(using: .sourceAtop)
+      return true
+    }
+    self.image = tinted
+    contentTintColor = ink
+    let center = NSMutableParagraphStyle()
+    center.alignment = .center
+    center.paragraphSpacing = 1
+    let text = NSMutableAttributedString(string: "\n\(title)\n", attributes: [
+      .font: NSFont.systemFont(ofSize: 14, weight: .semibold), .foregroundColor: ink, .paragraphStyle: center])
+    text.append(NSAttributedString(string: state, attributes: [
+      .font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: ink.withAlphaComponent(0.75),
+      .paragraphStyle: center]))
+    attributedTitle = text
+    layer?.backgroundColor = (fill ?? NSColor.labelColor.withAlphaComponent(0.08)).cgColor
+  }
+}
+
+func sectionHeader(_ title: String, hint: String? = nil) -> NSTextField {
+  let text = NSMutableAttributedString(string: title, attributes: [
+    .font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: NSColor.labelColor])
+  if let hint {
+    text.append(NSAttributedString(string: "   \(hint)", attributes: [
+      .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
+  }
+  return NSTextField(labelWithAttributedString: text)
 }
 
 final class PointerTable: NSTableView {
@@ -137,7 +260,7 @@ final class PointerTable: NSTableView {
 
 // One ranked device list. Drag a row to reorder, or click it to make it first.
 final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-  static let rowHeight: CGFloat = 32
+  static let rowHeight: CGFloat = 38
   let kind: Kind
   let table = PointerTable()
   let scroll = NSScrollView()
@@ -198,17 +321,35 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let uid = order[row]
     let id = connected[uid]
     let active = id != nil && id == current
-    let label = NSTextField(labelWithString: "\(row + 1)   \(names[uid] ?? uid)\(active ? "   ✓" : "")")
-    label.font = .systemFont(ofSize: 15, weight: active ? .semibold : .regular)
-    label.textColor = id == nil ? .tertiaryLabelColor : .labelColor
-    label.lineBreakMode = .byTruncatingTail
-    label.frame = NSRect(x: 10, y: 6, width: tableView.bounds.width - 20, height: 20)
-    label.autoresizingMask = .width
-    let cell = NSView()
+    let ink: NSColor = active ? .white : id == nil ? .tertiaryLabelColor : .labelColor
+
+    let rank = NSTextField(labelWithString: "\(row + 1)")
+    rank.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+    rank.textColor = active ? .white : .secondaryLabelColor
+
+    let name = NSTextField(labelWithString: names[uid] ?? uid)
+    name.font = .systemFont(ofSize: 14, weight: active ? .semibold : .regular)
+    name.textColor = ink
+    name.lineBreakMode = .byTruncatingTail
+    name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+    // State in words, not only color.
+    let status = NSTextField(labelWithString: active ? "In use" : id == nil ? "Not connected" : "")
+    status.font = .systemFont(ofSize: 11, weight: .medium)
+    status.textColor = active ? .white.withAlphaComponent(0.85) : .tertiaryLabelColor
+
+    // Grip so it is obvious the row can be dragged.
+    let grip = NSImageView(image: NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Drag")!)
+    grip.contentTintColor = active ? .white.withAlphaComponent(0.7) : .tertiaryLabelColor
+
+    let spacer = NSView()
+    spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+    let cell = NSStackView(views: [rank, name, spacer, status, grip])
+    cell.spacing = 10
+    cell.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
     cell.wantsLayer = true
-    cell.layer?.cornerRadius = 8
-    cell.layer?.backgroundColor = active ? claudeOrange.withAlphaComponent(0.25).cgColor : nil
-    cell.addSubview(label)
+    cell.layer?.cornerRadius = 10
+    cell.layer?.backgroundColor = (active ? accent : NSColor.labelColor.withAlphaComponent(0.06)).cgColor
     return cell
   }
 
@@ -234,10 +375,15 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
   let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
   let popover = NSPopover()
-  let voiceButton = PointerButton()
+  lazy var voiceTile = Tile(target: self, action: #selector(toggle))
+  lazy var micTile = Tile(target: self, action: #selector(toggleMicFromPanel))
   let stack = NSStackView()
   let icons = [false: menuIcon(bright: false), true: menuIcon(bright: true)]
   var lists: [DeviceList] = []
+  let f5Mode = PointerSegments(labels: ["Dictation", "Mute mic"], trackingMode: .selectOne, target: nil, action: nil)
+  lazy var hud = MuteHUD()
+  var hotKeys: [EventHotKeyRef?] = []
+  var mutedMic: AudioDeviceID? // set while Knob holds the mic muted, so the mute can follow a device switch
   var outsideClicks: Any?
   var names: [String: String] {
     get { UserDefaults.standard.dictionary(forKey: "names") as? [String: String] ?? [:] }
@@ -247,38 +393,44 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
   var isOn: Bool { FileManager.default.fileExists(atPath: flag) }
 
   func applicationDidFinishLaunching(_ note: Notification) {
-    voiceButton.isBordered = false
-    voiceButton.wantsLayer = true
-    voiceButton.layer?.cornerRadius = 18
-    voiceButton.target = self
-    voiceButton.action = #selector(toggle)
-    voiceButton.image = spark(size: 30, color: .white)
-    voiceButton.imagePosition = .imageLeading
-    voiceButton.imageHugsTitle = true
-    voiceButton.heightAnchor.constraint(equalToConstant: 76).isActive = true
-
     stack.orientation = .vertical
     stack.alignment = .leading
-    stack.spacing = 6
-    stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 12, right: 16)
-    stack.widthAnchor.constraint(equalToConstant: 300).isActive = true
-    stack.addArrangedSubview(voiceButton)
-    stack.setCustomSpacing(18, after: voiceButton)
+    stack.spacing = 8
+    stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 14, right: 16)
+    stack.widthAnchor.constraint(equalToConstant: 320).isActive = true
+
+    let tiles = NSStackView(views: [voiceTile, micTile])
+    tiles.distribution = .fillEqually
+    tiles.spacing = 10
+    stack.addArrangedSubview(tiles)
+    stack.setCustomSpacing(20, after: tiles)
+
     for kind in kinds {
-      let header = NSTextField(labelWithString: "\(kind.title.uppercased())  ·  drag to reorder")
-      header.font = .systemFont(ofSize: 11, weight: .semibold)
-      header.textColor = .secondaryLabelColor
+      let header = sectionHeader(kind.title, hint: "Drag to set the order")
       let list = DeviceList(kind: kind) { [weak self] in self?.applyPriority() }
       lists.append(list)
       stack.addArrangedSubview(header)
       stack.addArrangedSubview(list.scroll)
-      stack.setCustomSpacing(2, after: header)
-      stack.setCustomSpacing(14, after: list.scroll)
+      stack.setCustomSpacing(18, after: list.scroll)
     }
-    let quit = PointerButton(title: "Quit", target: NSApp, action: #selector(NSApplication.terminate(_:)))
-    quit.bezelStyle = .inline
+
+    f5Mode.controlSize = .large
+    f5Mode.font = .systemFont(ofSize: 14)
+    f5Mode.segmentDistribution = .fillEqually
+    f5Mode.target = self
+    f5Mode.action = #selector(changeF5Mode)
+    f5Mode.selectedSegment = UserDefaults.standard.bool(forKey: "f5Mute") ? 1 : 0
+    let f5Header = sectionHeader("F5 key", hint: "The 🎤 key on Mac laptops")
+    stack.addArrangedSubview(f5Header)
+    stack.addArrangedSubview(f5Mode)
+    stack.setCustomSpacing(20, after: f5Mode)
+
+    let quit = PointerButton(title: "Quit Knob", target: NSApp, action: #selector(NSApplication.terminate(_:)))
+    quit.isBordered = false
+    quit.contentTintColor = .secondaryLabelColor
+    quit.font = .systemFont(ofSize: 12)
     stack.addArrangedSubview(quit)
-    for view in [voiceButton] + lists.map(\.scroll) {
+    for view in [tiles, f5Mode] + lists.map(\.scroll) {
       view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
     }
     popover.contentViewController = NSViewController()
@@ -295,7 +447,64 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
       var addr = address(selector)
       AudioObjectAddPropertyListenerBlock(system, &addr, .main) { [weak self] _, _ in self?.applyPriority() }
     }
+    var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+    InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in onMuteKey(); return noErr }, 1, &spec, nil, nil)
+    onMuteKey = { [weak self] in self?.toggleMic() }
+    applyF5Mode()
     applyPriority()
+  }
+
+  func applicationWillTerminate(_ notification: Notification) {
+    if !hotKeys.isEmpty { remapDictationKey(false) } // give F5 back to dictation
+  }
+
+  @objc func changeF5Mode() {
+    UserDefaults.standard.set(f5Mode.selectedSegment == 1, forKey: "f5Mute")
+    applyF5Mode()
+  }
+
+  func applyF5Mode() {
+    let mute = UserDefaults.standard.bool(forKey: "f5Mute")
+    // Only touch the key mapping when Knob owns it, so dictation mode leaves other mappings alone.
+    if mute || !hotKeys.isEmpty { remapDictationKey(mute) }
+    if mute, hotKeys.isEmpty {
+      // Keyboards may or may not flag a function key with fn, and Carbon matches modifiers exactly.
+      hotKeys = [0, UInt32(kEventKeyModifierFnMask)].map { modifiers in
+        var ref: EventHotKeyRef?
+        RegisterEventHotKey(UInt32(kVK_F20), modifiers, EventHotKeyID(signature: 0x4B4E4F42, id: modifiers),
+                            GetApplicationEventTarget(), 0, &ref)
+        return ref
+      }
+    } else if !mute, !hotKeys.isEmpty {
+      hotKeys.compactMap { $0 }.forEach { UnregisterEventHotKey($0) }
+      hotKeys = []
+    }
+  }
+
+  // nil when the device has no settable mute control.
+  func isMuted(_ id: AudioDeviceID) -> Bool? {
+    var addr = address(kAudioDevicePropertyMute, kAudioObjectPropertyScopeInput)
+    var value = UInt32(0)
+    var size = UInt32(MemoryLayout<UInt32>.size)
+    guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else { return nil }
+    return value != 0
+  }
+
+  func setMuted(_ id: AudioDeviceID, _ muted: Bool) -> Bool {
+    var addr = address(kAudioDevicePropertyMute, kAudioObjectPropertyScopeInput)
+    var value = UInt32(muted ? 1 : 0)
+    return AudioObjectSetPropertyData(id, &addr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value) == noErr
+  }
+
+  @objc func toggleMicFromPanel() { toggleMic() }
+
+  func toggleMic() {
+    // Read the device, not a cached flag: System Settings or a call app may have changed it.
+    let mic = kinds[1].defaultDevice
+    guard let muted = isMuted(mic), setMuted(mic, !muted) else { return hud.show(muted: nil) }
+    mutedMic = muted ? nil : mic
+    hud.show(muted: !muted)
+    refresh()
   }
 
   // Sets each default to the highest ranked connected device. Writes only on a real change,
@@ -315,6 +524,11 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
       if let best = order.first(where: { connected[$0] != nil }), connected[best] != current {
         kind.defaultDevice = connected[best]!
       }
+    }
+    // Mute follows you to whichever mic becomes the default, unless it was unmuted elsewhere meanwhile.
+    let mic = kinds[1].defaultDevice
+    if let old = mutedMic, old != mic {
+      mutedMic = isMuted(old) != false && setMuted(mic, true) ? mic : nil
     }
     refresh()
   }
@@ -352,10 +566,14 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
   func refresh(full: Bool = false) {
     let on = isOn
     item.button?.image = icons[on]
-    voiceButton.attributedTitle = NSAttributedString(string: on ? "  Claude speaks" : "  Claude silent", attributes: [
-      .foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 22, weight: .semibold)])
-    voiceButton.layer?.backgroundColor = (on ? claudeOrange : NSColor.systemGray).cgColor
     guard full || popover.isShown else { return }
+    voiceTile.show(image: spark(size: 30, color: .black), title: "Claude voice",
+                   state: on ? "Speaks replies" : "Silent", fill: on ? accent : nil)
+    let muted = isMuted(kinds[1].defaultDevice)
+    let symbol = NSImage(systemSymbolName: muted == false ? "mic.fill" : "mic.slash.fill", accessibilityDescription: nil)!
+      .withSymbolConfiguration(.init(pointSize: 26, weight: .medium))!
+    micTile.show(image: symbol, title: "Microphone", state: muted.map { $0 ? "Muted" : "Live" } ?? "Can't mute",
+                 fill: muted == true ? .systemRed : nil)
     lists.forEach { $0.reload(names: names) }
     popover.contentSize = stack.fittingSize
   }
@@ -365,4 +583,9 @@ let app = NSApplication.shared
 let delegate = App()
 app.delegate = delegate
 app.setActivationPolicy(.accessory)
+// launchctl and logout send SIGTERM; quit normally so F5 gets its dictation mapping back.
+signal(SIGTERM, SIG_IGN)
+let sigterm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+sigterm.setEventHandler { app.terminate(nil) }
+sigterm.resume()
 app.run()
