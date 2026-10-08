@@ -203,43 +203,47 @@ final class PointerButton: NSButton {
 
 // A big square switch in the style of Control Center: icon, name, and its state in words.
 final class Tile: NSButton {
+  let icon = NSImageView()
+  let name = NSTextField(labelWithString: "")
+  let detail = NSTextField(labelWithString: "")
+
   override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+  override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil } // labels never eat the click
 
   convenience init(target: AnyObject, action: Selector) {
     self.init(frame: .zero)
     self.target = target
     self.action = action
+    title = ""
     isBordered = false
     wantsLayer = true
     layer?.cornerRadius = 16
-    imagePosition = .imageAbove
     heightAnchor.constraint(equalToConstant: 104).isActive = true
+    // Every icon gets the same fixed box, so both tiles line up whatever the glyph.
+    icon.imageScaling = .scaleProportionallyUpOrDown
+    icon.widthAnchor.constraint(equalToConstant: 30).isActive = true
+    icon.heightAnchor.constraint(equalToConstant: 30).isActive = true
+    name.font = .systemFont(ofSize: 14, weight: .semibold)
+    detail.font = .systemFont(ofSize: 12, weight: .medium)
+    let column = NSStackView(views: [icon, name, detail])
+    column.orientation = .vertical
+    column.spacing = 2
+    column.setCustomSpacing(10, after: icon)
+    column.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(column)
+    column.centerXAnchor.constraint(equalTo: centerXAnchor).isActive = true
+    column.centerYAnchor.constraint(equalTo: centerYAnchor).isActive = true
   }
 
-  // fill nil means the switch is in its resting state.
-  func show(image: NSImage, title: String, state: String, fill: NSColor?) {
+  // fill nil means the switch is in its resting state. image must be a template so it takes the ink.
+  func show(image: NSImage, title: String, state text: String, fill: NSColor?) {
     let ink: NSColor = fill == nil ? .labelColor : .white
-    // Draw every icon on the same canvas so both tiles line up.
-    let box = NSSize(width: 34, height: 34)
-    let symbol = image
-    let tinted = NSImage(size: box, flipped: false) { rect in
-      let s = symbol.size
-      symbol.draw(in: NSRect(x: (rect.width - s.width) / 2, y: (rect.height - s.height) / 2, width: s.width, height: s.height))
-      ink.set()
-      rect.fill(using: .sourceAtop)
-      return true
-    }
-    self.image = tinted
-    contentTintColor = ink
-    let center = NSMutableParagraphStyle()
-    center.alignment = .center
-    center.paragraphSpacing = 1
-    let text = NSMutableAttributedString(string: "\n\(title)\n", attributes: [
-      .font: NSFont.systemFont(ofSize: 14, weight: .semibold), .foregroundColor: ink, .paragraphStyle: center])
-    text.append(NSAttributedString(string: state, attributes: [
-      .font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: ink.withAlphaComponent(0.75),
-      .paragraphStyle: center]))
-    attributedTitle = text
+    icon.image = image
+    icon.contentTintColor = ink
+    name.stringValue = title
+    name.textColor = ink
+    detail.stringValue = text
+    detail.textColor = ink.withAlphaComponent(0.75)
     layer?.backgroundColor = (fill ?? NSColor.labelColor.withAlphaComponent(0.08)).cgColor
   }
 }
@@ -375,6 +379,11 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
   let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
   let popover = NSPopover()
+  let sparkTemplate: NSImage = {
+    let image = spark(size: 30, color: .black)
+    image.isTemplate = true
+    return image
+  }()
   lazy var voiceTile = Tile(target: self, action: #selector(toggle))
   lazy var micTile = Tile(target: self, action: #selector(toggleMicFromPanel))
   let stack = NSStackView()
@@ -397,7 +406,7 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     stack.alignment = .leading
     stack.spacing = 8
     stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 14, right: 16)
-    stack.widthAnchor.constraint(equalToConstant: 320).isActive = true
+    stack.widthAnchor.constraint(equalToConstant: 340).isActive = true
 
     let tiles = NSStackView(views: [voiceTile, micTile])
     tiles.distribution = .fillEqually
@@ -567,11 +576,10 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let on = isOn
     item.button?.image = icons[on]
     guard full || popover.isShown else { return }
-    voiceTile.show(image: spark(size: 30, color: .black), title: "Claude voice",
+    voiceTile.show(image: sparkTemplate, title: "Claude voice",
                    state: on ? "Speaks replies" : "Silent", fill: on ? accent : nil)
     let muted = isMuted(kinds[1].defaultDevice)
     let symbol = NSImage(systemSymbolName: muted == false ? "mic.fill" : "mic.slash.fill", accessibilityDescription: nil)!
-      .withSymbolConfiguration(.init(pointSize: 26, weight: .medium))!
     micTile.show(image: symbol, title: "Microphone", state: muted.map { $0 ? "Muted" : "Live" } ?? "Can't mute",
                  fill: muted == true ? .systemRed : nil)
     lists.forEach { $0.reload(names: names) }
