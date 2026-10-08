@@ -20,5 +20,5 @@ cat > "$agent" <<PLIST
 <key>RunAtLoad</key><true/>
 </dict></plist>
 PLIST
-launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$agent"
+launchctl bootstrap "gui/$(id -u)" "$agent" 2>/dev/null || true # already loaded after the first install
+launchctl kickstart -k "gui/$(id -u)/$label"
