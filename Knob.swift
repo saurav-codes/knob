@@ -1,9 +1,12 @@
-// Knob: a tiny menu bar utility. A switch for Claude's spoken replies.
+// Knob: a tiny menu bar utility. A switch for Claude's spoken replies, plus speaker and mic priority lists.
 // The voice hook speaks only while ~/.claude/voice-reply exists.
+// Audio work runs only when CoreAudio reports a device change; nothing polls.
 import AppKit
+import CoreAudio
 
 let flag = NSHomeDirectory() + "/.claude/voice-reply"
 let claudeOrange = NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1)
+let system = AudioObjectID(kAudioObjectSystemObject)
 
 // The Claude spark: uneven rays around a center, drawn in code so the app ships no image files.
 func spark(size: CGFloat, color: NSColor) -> NSImage {
@@ -24,6 +27,75 @@ func spark(size: CGFloat, color: NSColor) -> NSImage {
     return true
   }
 }
+
+func address(_ selector: AudioObjectPropertySelector,
+             _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
+  AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+}
+
+func string(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+  var addr = address(selector)
+  var value: Unmanaged<CFString>?
+  var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+  guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else { return nil }
+  return value?.takeRetainedValue() as String?
+}
+
+// Speakers or microphones: which default it controls, which streams a device needs, where its order is saved.
+struct Kind {
+  let title: String
+  let defaultSelector: AudioObjectPropertySelector
+  let scope: AudioObjectPropertyScope
+  let key: String
+
+  var defaultDevice: AudioDeviceID {
+    get {
+      var addr = address(defaultSelector)
+      var id = AudioDeviceID(0)
+      var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+      AudioObjectGetPropertyData(system, &addr, 0, nil, &size, &id)
+      return id
+    }
+    nonmutating set {
+      var addr = address(defaultSelector)
+      var id = newValue
+      AudioObjectSetPropertyData(system, &addr, 0, nil, UInt32(MemoryLayout<AudioDeviceID>.size), &id)
+    }
+  }
+
+  // Connected, visible devices of this kind, keyed by UID (stable across reconnects, unlike the ID).
+  func connected() -> [String: AudioDeviceID] {
+    var addr = address(kAudioHardwarePropertyDevices)
+    var size = UInt32(0)
+    AudioObjectGetPropertyDataSize(system, &addr, 0, nil, &size)
+    var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+    AudioObjectGetPropertyData(system, &addr, 0, nil, &size, &ids)
+    var result: [String: AudioDeviceID] = [:]
+    for id in ids {
+      var streams = address(kAudioDevicePropertyStreams, scope)
+      var streamsSize = UInt32(0)
+      AudioObjectGetPropertyDataSize(id, &streams, 0, nil, &streamsSize)
+      var hiddenAddr = address(kAudioDevicePropertyIsHidden)
+      var hidden = UInt32(0)
+      var hiddenSize = UInt32(MemoryLayout<UInt32>.size)
+      AudioObjectGetPropertyData(id, &hiddenAddr, 0, nil, &hiddenSize, &hidden)
+      if streamsSize > 0, hidden == 0, let uid = string(id, kAudioDevicePropertyDeviceUID) { result[uid] = id }
+    }
+    return result
+  }
+
+  var order: [String] {
+    get { UserDefaults.standard.stringArray(forKey: key) ?? [] }
+    nonmutating set { UserDefaults.standard.set(newValue, forKey: key) }
+  }
+}
+
+let kinds = [
+  Kind(title: "Speakers", defaultSelector: kAudioHardwarePropertyDefaultOutputDevice,
+       scope: kAudioObjectPropertyScopeOutput, key: "output"),
+  Kind(title: "Microphone", defaultSelector: kAudioHardwarePropertyDefaultInputDevice,
+       scope: kAudioObjectPropertyScopeInput, key: "input"),
+]
 
 // Menu bar mark: a knob inside its scale, bright while Claude speaks and dull when silent.
 func menuIcon(bright: Bool) -> NSImage {
