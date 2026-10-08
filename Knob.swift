@@ -127,12 +127,89 @@ func menuIcon(bright: Bool) -> NSImage {
   return image
 }
 
+// One ranked device list. Click a row to make it first.
+final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+  static let rowHeight: CGFloat = 32
+  let kind: Kind
+  let table = NSTableView()
+  let scroll = NSScrollView()
+  let height: NSLayoutConstraint
+  let onChange: () -> Void
+  var order: [String] = []
+  var connected: [String: AudioDeviceID] = [:]
+  var current = AudioDeviceID(0)
+  var names: [String: String] = [:]
+
+  init(kind: Kind, onChange: @escaping () -> Void) {
+    self.kind = kind
+    self.onChange = onChange
+    height = scroll.heightAnchor.constraint(equalToConstant: 0)
+    super.init()
+    table.addTableColumn(NSTableColumn())
+    table.headerView = nil
+    table.style = .plain
+    table.backgroundColor = .clear
+    table.selectionHighlightStyle = .none
+    table.rowHeight = Self.rowHeight
+    table.intercellSpacing = NSSize(width: 0, height: 4)
+    table.dataSource = self
+    table.delegate = self
+    table.target = self
+    table.action = #selector(clicked)
+    scroll.documentView = table
+    scroll.drawsBackground = false
+    scroll.hasVerticalScroller = false
+    height.isActive = true
+  }
+
+  func reload(names: [String: String]) {
+    self.names = names
+    order = kind.order
+    connected = kind.connected()
+    current = kind.defaultDevice
+    table.reloadData()
+    height.constant = CGFloat(order.count) * (Self.rowHeight + 4)
+  }
+
+  func move(from: Int, to: Int) {
+    var newOrder = order
+    newOrder.insert(newOrder.remove(at: from), at: to)
+    kind.order = newOrder
+    onChange()
+  }
+
+  @objc func clicked() {
+    if table.clickedRow > 0 { move(from: table.clickedRow, to: 0) }
+  }
+
+  func numberOfRows(in tableView: NSTableView) -> Int { order.count }
+
+  func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
+    let uid = order[row]
+    let id = connected[uid]
+    let active = id != nil && id == current
+    let label = NSTextField(labelWithString: "\(row + 1)   \(names[uid] ?? uid)\(active ? "   ✓" : "")")
+    label.font = .systemFont(ofSize: 15, weight: active ? .semibold : .regular)
+    label.textColor = id == nil ? .tertiaryLabelColor : .labelColor
+    label.lineBreakMode = .byTruncatingTail
+    label.frame = NSRect(x: 10, y: 6, width: tableView.bounds.width - 20, height: 20)
+    label.autoresizingMask = .width
+    let cell = NSView()
+    cell.wantsLayer = true
+    cell.layer?.cornerRadius = 8
+    cell.layer?.backgroundColor = active ? claudeOrange.withAlphaComponent(0.25).cgColor : nil
+    cell.addSubview(label)
+    return cell
+  }
+}
+
 final class App: NSObject, NSApplicationDelegate {
   let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
   let popover = NSPopover()
   let voiceButton = NSButton()
   let stack = NSStackView()
   let icons = [false: menuIcon(bright: false), true: menuIcon(bright: true)]
+  var lists: [DeviceList] = []
   var names: [String: String] {
     get { UserDefaults.standard.dictionary(forKey: "names") as? [String: String] ?? [:] }
     set { UserDefaults.standard.set(newValue, forKey: "names") }
@@ -158,10 +235,23 @@ final class App: NSObject, NSApplicationDelegate {
     stack.widthAnchor.constraint(equalToConstant: 300).isActive = true
     stack.addArrangedSubview(voiceButton)
     stack.setCustomSpacing(18, after: voiceButton)
+    for kind in kinds {
+      let header = NSTextField(labelWithString: "\(kind.title.uppercased())  ·  tap to make first")
+      header.font = .systemFont(ofSize: 11, weight: .semibold)
+      header.textColor = .secondaryLabelColor
+      let list = DeviceList(kind: kind) { [weak self] in self?.applyPriority() }
+      lists.append(list)
+      stack.addArrangedSubview(header)
+      stack.addArrangedSubview(list.scroll)
+      stack.setCustomSpacing(2, after: header)
+      stack.setCustomSpacing(14, after: list.scroll)
+    }
     let quit = NSButton(title: "Quit", target: NSApp, action: #selector(NSApplication.terminate(_:)))
     quit.bezelStyle = .inline
     stack.addArrangedSubview(quit)
-    voiceButton.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
+    for view in [voiceButton] + lists.map(\.scroll) {
+      view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
+    }
     popover.contentViewController = NSViewController()
     popover.contentViewController!.view = stack
     popover.behavior = .transient
@@ -200,7 +290,7 @@ final class App: NSObject, NSApplicationDelegate {
   }
 
   @objc func showPopover() {
-    refresh() // the voice flag may have changed from a terminal
+    refresh(full: true) // the voice flag may have changed from a terminal
     popover.show(relativeTo: item.button!.bounds, of: item.button!, preferredEdge: .minY)
   }
 
@@ -218,12 +308,15 @@ final class App: NSObject, NSApplicationDelegate {
     refresh()
   }
 
-  func refresh() {
+  // Device lists are rebuilt only when visible; a closed popover costs nothing on audio events.
+  func refresh(full: Bool = false) {
     let on = isOn
     item.button?.image = icons[on]
     voiceButton.attributedTitle = NSAttributedString(string: on ? "  Claude speaks" : "  Claude silent", attributes: [
       .foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 22, weight: .semibold)])
     voiceButton.layer?.backgroundColor = (on ? claudeOrange : NSColor.systemGray).cgColor
+    guard full || popover.isShown else { return }
+    lists.forEach { $0.reload(names: names) }
     popover.contentSize = stack.fittingSize
   }
 }
