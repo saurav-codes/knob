@@ -1,4 +1,4 @@
-// Knob: a tiny menu bar utility. A switch for Claude's spoken replies, speaker and mic priority lists,
+// Knob: a tiny notch utility. A switch for Claude's spoken replies, speaker and mic priority lists,
 // and an F5 mic mute key. The voice hook speaks only while ~/.claude/voice-reply exists.
 // Audio work runs only when CoreAudio reports a device change, and the mute key is a system hotkey; nothing polls.
 import AppKit
@@ -105,36 +105,6 @@ let kinds = [
   Kind(title: "Microphone", defaultSelector: kAudioHardwarePropertyDefaultInputDevice,
        scope: kAudioObjectPropertyScopeInput, key: "input"),
 ]
-
-// Menu bar mark: a knob inside its scale, bright while Claude speaks and dull when silent.
-func menuIcon(bright: Bool) -> NSImage {
-  let image = NSImage(size: NSSize(width: 20, height: 18), flipped: false) { rect in
-    let c = CGPoint(x: rect.midX, y: rect.midY)
-    let color = NSColor.black.withAlphaComponent(bright ? 1 : 0.4)
-    color.setFill()
-    NSBezierPath(ovalIn: NSRect(x: c.x - 5, y: c.y - 5, width: 10, height: 10)).fill()
-    // Pointer cut out of the knob, turned toward the high end of the scale.
-    let pointer = NSBezierPath()
-    pointer.lineWidth = 1.8
-    pointer.lineCapStyle = .round
-    pointer.move(to: c)
-    pointer.line(to: CGPoint(x: c.x + 3.2 * cos(.pi / 4), y: c.y + 3.2 * sin(.pi / 4)))
-    NSGraphicsContext.current?.compositingOperation = .clear
-    pointer.stroke()
-    NSGraphicsContext.current?.compositingOperation = .sourceOver
-    // Scale arc around the knob, open at the bottom like a volume dial.
-    let scale = NSBezierPath()
-    scale.lineWidth = 1.5
-    scale.lineCapStyle = .round
-    scale.appendArc(withCenter: c, radius: 8, startAngle: -50, endAngle: 230)
-    color.setStroke()
-    scale.stroke()
-    return true
-  }
-  image.isTemplate = true // follows the menu bar's light or dark tint
-  image.accessibilityDescription = bright ? "Knob, Claude voice on" : "Knob, Claude voice off"
-  return image
-}
 
 // The F5 dictation key sends HID consumer usage 0xCF. Remapping it to F20 stops dictation and lets
 // a plain Carbon hotkey catch it, which needs no Accessibility or Input Monitoring permission.
@@ -670,16 +640,15 @@ final class PortList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
   }
 }
 
-final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
-  let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-  let popover = NSPopover()
-  // On a notched screen a black strip sits in the notch, and hovering it drops the same panel out of the notch.
+final class App: NSObject, NSApplicationDelegate {
+  // The panel drops out of the notch. A black strip sits in the notch so hovering it opens the panel.
   let notchTrigger = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                    backing: .buffered, defer: true)
   let notchPanel = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                  backing: .buffered, defer: true)
   let notchBody = HoverView()
   var notch = NSRect.zero
+  lazy var outerTop = outer.topAnchor.constraint(equalTo: notchBody.topAnchor)
   let sparkTemplate: NSImage = {
     let image = spark(size: 30, color: .black)
     image.isTemplate = true
@@ -689,7 +658,6 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
   lazy var micTile = Tile(target: self, action: #selector(toggleMicFromPanel))
   let stack = NSStackView()
   let outer = NSScrollView()
-  let icons = [false: menuIcon(bright: false), true: menuIcon(bright: true)]
   var lists: [DeviceList] = []
   lazy var ports = PortList { [weak self] in self?.resize() }
   var portTimer: Timer?
@@ -771,10 +739,6 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
       document.leadingAnchor.constraint(equalTo: outer.contentView.leadingAnchor),
       document.widthAnchor.constraint(equalTo: outer.contentView.widthAnchor),
     ])
-    popover.contentViewController = NSViewController()
-    popover.behavior = .transient
-    popover.delegate = self
-
     for panel in [notchTrigger, notchPanel] {
       panel.isOpaque = false
       panel.backgroundColor = .clear
@@ -793,13 +757,19 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     notchBody.layer?.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner] // bottom corners only
     notchBody.onExit = { [weak self] in self?.hideNotchPanelIfLeft() }
     notchPanel.contentView = notchBody
+    outer.translatesAutoresizingMaskIntoConstraints = false
+    notchBody.addSubview(outer)
+    NSLayoutConstraint.activate([
+      outerTop,
+      outer.bottomAnchor.constraint(equalTo: notchBody.bottomAnchor),
+      outer.leadingAnchor.constraint(equalTo: notchBody.leadingAnchor),
+      outer.trailingAnchor.constraint(equalTo: notchBody.trailingAnchor),
+    ])
     notchPanel.appearance = NSAppearance(named: .darkAqua)
     placeNotch()
     NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                            object: nil, queue: .main) { [weak self] _ in self?.placeNotch() }
 
-    item.button?.target = self
-    item.button?.action = #selector(togglePopover)
 
     // macOS switches to whatever was plugged in last; put our pick back on every device or default change.
     for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultOutputDevice,
@@ -895,46 +865,26 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     refresh()
   }
 
-  var isShowing: Bool { popover.isShown || notchPanel.isVisible }
+  var isShowing: Bool { notchPanel.isVisible }
 
-  @objc func togglePopover() {
-    if popover.isShown { return popover.performClose(nil) }
-    hideNotchPanel()
-    outer.removeFromSuperview()
-    outer.translatesAutoresizingMaskIntoConstraints = true
-    popover.contentViewController!.view = outer
-    willShowPanel()
-    popover.show(relativeTo: item.button!.bounds, of: item.button!, preferredEdge: .minY)
-  }
-
-  func popoverDidClose(_ notification: Notification) { didHidePanel() }
-
-  // The notch is the gap between the two usable areas at the top of a notched screen.
+  // The notch is the gap between the two usable areas at the top of a notched screen. With the lid
+  // closed there is no notch, so there is nothing to hover until it opens again.
   func placeNotch() {
+    hideNotchPanel()
     guard let screen = NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil }),
           let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else {
       notch = .zero
-      hideNotchPanel()
       return notchTrigger.orderOut(nil)
     }
     notch = NSRect(x: left.maxX, y: screen.frame.maxY - screen.safeAreaInsets.top,
                    width: right.minX - left.maxX, height: screen.safeAreaInsets.top)
+    outerTop.constant = notch.height
     notchTrigger.setFrame(notch, display: true)
     notchTrigger.orderFrontRegardless()
   }
 
   func showNotchPanel() {
     guard !notchPanel.isVisible, notch != .zero else { return }
-    if popover.isShown { popover.performClose(nil) }
-    outer.removeFromSuperview()
-    outer.translatesAutoresizingMaskIntoConstraints = false
-    notchBody.addSubview(outer)
-    NSLayoutConstraint.activate([
-      outer.topAnchor.constraint(equalTo: notchBody.topAnchor, constant: notch.height),
-      outer.bottomAnchor.constraint(equalTo: notchBody.bottomAnchor),
-      outer.leadingAnchor.constraint(equalTo: notchBody.leadingAnchor),
-      outer.trailingAnchor.constraint(equalTo: notchBody.trailingAnchor),
-    ])
     willShowPanel()
     notchPanel.alphaValue = 0
     notchPanel.orderFrontRegardless()
@@ -962,9 +912,8 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // Ports are scanned only while the panel is open, so Knob still does nothing in the background.
     ports.scan()
     portTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in self?.ports.scan() }
-    // A menu bar app is never the active app, so .transient alone misses clicks in other apps.
+    // Knob is never the active app, so only a global monitor sees clicks in other apps.
     outsideClicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-      self?.popover.performClose(nil)
       self?.hideNotchPanel()
     }
   }
@@ -990,11 +939,10 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     refresh()
   }
 
-  // Device lists are rebuilt only when visible; a closed popover costs nothing on audio events.
+  // Device lists are rebuilt only when visible; a closed panel costs nothing on audio events.
   func refresh(full: Bool = false) {
-    let on = isOn
-    item.button?.image = icons[on]
     guard full || isShowing else { return }
+    let on = isOn
     voiceTile.show(image: sparkTemplate, title: "Claude voice",
                    state: on ? "Speaks replies" : "Silent", fill: on ? claudeOrange : nil)
     let muted = isMuted(kinds[1].defaultDevice)
@@ -1008,14 +956,10 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
   // As tall as the content, but never taller than the screen below the menu bar.
   func resize() {
     let fit = stack.fittingSize
-    if outer.superview === notchBody {
-      let screen = NSScreen.screens.first { $0.frame.contains(notch) }!
-      let height = notch.height + min(fit.height, screen.visibleFrame.height - 30)
-      notchPanel.setFrame(NSRect(x: notch.midX - fit.width / 2, y: notch.maxY - height, width: fit.width, height: height),
-                          display: true)
-    } else if let screen = item.button?.window?.screen {
-      popover.contentSize = NSSize(width: fit.width, height: min(fit.height, screen.visibleFrame.height - 30))
-    }
+    guard let screen = NSScreen.screens.first(where: { $0.frame.intersects(notch) }) else { return }
+    let height = notch.height + min(fit.height, screen.visibleFrame.height - 30)
+    notchPanel.setFrame(NSRect(x: notch.midX - fit.width / 2, y: notch.maxY - height, width: fit.width, height: height),
+                        display: true)
   }
 }
 

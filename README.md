@@ -1,11 +1,11 @@
 # Knob
 
-A tiny macOS menu bar utility for the few audio switches you touch every day. One click opens a panel with big, obvious controls.
+A tiny macOS notch utility for the few audio switches you touch every day. Hover the notch and a panel with big, obvious controls drops out of it.
 
-- **Claude voice switch.** One big button turns Claude Code's spoken replies on or off. The knob in the menu bar is bright while Claude speaks and dull while it is silent.
+- **Claude voice switch.** One big button turns Claude Code's spoken replies on or off.
 - **Speaker and mic priority.** Drag your devices into the order you want. Knob always switches to the highest ranked device that is connected, so plugging in a new device never steals your audio. Speakers and microphone have separate lists, so you can keep AirPods for sound and the MacBook mic for calls. Click ⊖ on a device, such as earphones with a poor mic, and Knob never switches to it again, even when macOS does on connect. ⊕ brings it back.
 - **Open ports.** A collapsed section whose title counts what is running. Expand it to see every TCP port your own processes listen on, such as dev servers an agent started and forgot, with the folder it was started in and how long it has run. Click a row to open it in your browser, or ⏹ to stop the process. macOS services like AirPlay are hidden.
-- **Notch panel.** On a Mac with a notch, hover the notch and the same panel drops out of it. Move the pointer away and it closes. The menu bar knob still works, and is the way in on screens without a notch.
+- **Lives in the notch.** No menu bar icon. Hover the notch to open the panel, and move the pointer away or click elsewhere to close it. Needs a Mac with a notch, and is out of reach while the lid is closed.
 - **Mic mute tile and F5 key.** Click the Microphone tile, or press F5 (the dictation key on Mac laptops), to mute or unmute whichever mic is in use. A large icon on the laptop screen confirms the change. A switch in the panel gives F5 back to macOS dictation.
 
 ## Lightweight by design
