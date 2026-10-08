@@ -127,7 +127,7 @@ func menuIcon(bright: Bool) -> NSImage {
   return image
 }
 
-// One ranked device list. Click a row to make it first.
+// One ranked device list. Drag a row to reorder, or click it to make it first.
 final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
   static let rowHeight: CGFloat = 32
   let kind: Kind
@@ -152,6 +152,8 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     table.selectionHighlightStyle = .none
     table.rowHeight = Self.rowHeight
     table.intercellSpacing = NSSize(width: 0, height: 4)
+    table.registerForDraggedTypes([.string])
+    table.setDraggingSourceOperationMask(.move, forLocal: true)
     table.dataSource = self
     table.delegate = self
     table.target = self
@@ -201,6 +203,24 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     cell.addSubview(label)
     return cell
   }
+
+  func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+    String(row) as NSString
+  }
+
+  func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int,
+                 proposedDropOperation op: NSTableView.DropOperation) -> NSDragOperation {
+    guard info.draggingSource as? NSTableView === table else { return [] } // no drags between the two lists
+    tableView.setDropRow(row, dropOperation: .above)
+    return .move
+  }
+
+  func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int,
+                 dropOperation: NSTableView.DropOperation) -> Bool {
+    guard let from = info.draggingPasteboard.string(forType: .string).flatMap(Int.init) else { return false }
+    move(from: from, to: row > from ? row - 1 : row)
+    return true
+  }
 }
 
 final class App: NSObject, NSApplicationDelegate {
@@ -236,7 +256,7 @@ final class App: NSObject, NSApplicationDelegate {
     stack.addArrangedSubview(voiceButton)
     stack.setCustomSpacing(18, after: voiceButton)
     for kind in kinds {
-      let header = NSTextField(labelWithString: "\(kind.title.uppercased())  ·  tap to make first")
+      let header = NSTextField(labelWithString: "\(kind.title.uppercased())  ·  drag to reorder")
       header.font = .systemFont(ofSize: 11, weight: .semibold)
       header.textColor = .secondaryLabelColor
       let list = DeviceList(kind: kind) { [weak self] in self?.applyPriority() }
