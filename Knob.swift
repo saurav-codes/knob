@@ -89,6 +89,13 @@ struct Kind {
     get { UserDefaults.standard.stringArray(forKey: key) ?? [] }
     nonmutating set { UserDefaults.standard.set(newValue, forKey: key) }
   }
+
+  // Devices never to switch to, such as a headset's poor mic. Kept per kind, since a headset's
+  // speakers and mic share one UID. Stored order keeps them after every device still in use.
+  var off: Set<String> {
+    get { Set(UserDefaults.standard.stringArray(forKey: key + "Off") ?? []) }
+    nonmutating set { UserDefaults.standard.set(newValue.sorted(), forKey: key + "Off") }
+  }
 }
 
 let kinds = [
@@ -274,6 +281,8 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
   var connected: [String: AudioDeviceID] = [:]
   var current = AudioDeviceID(0)
   var names: [String: String] = [:]
+  var off: Set<String> = []
+  var inUse: Int { order.count - off.count } // rows above the "never use" ones
 
   init(kind: Kind, onChange: @escaping () -> Void) {
     self.kind = kind
@@ -302,6 +311,7 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
   func reload(names: [String: String]) {
     self.names = names
     order = kind.order
+    off = kind.off
     connected = kind.connected()
     current = kind.defaultDevice
     table.reloadData()
@@ -316,7 +326,22 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
   }
 
   @objc func clicked() {
-    if table.clickedRow > 0 { move(from: table.clickedRow, to: 0) }
+    if table.clickedRow > 0, table.clickedRow < inUse { move(from: table.clickedRow, to: 0) }
+  }
+
+  // Never use a device, or use it again at the bottom of the ranking.
+  @objc func toggleUse(_ sender: NSButton) {
+    let uid = order[sender.tag]
+    var newOrder = order.filter { $0 != uid }
+    if off.contains(uid) {
+      newOrder.insert(uid, at: inUse)
+      kind.off = off.subtracting([uid])
+    } else {
+      newOrder.append(uid)
+      kind.off = off.union([uid])
+    }
+    kind.order = newOrder
+    onChange()
   }
 
   func numberOfRows(in tableView: NSTableView) -> Int { order.count }
@@ -324,10 +349,11 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
   func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
     let uid = order[row]
     let id = connected[uid]
-    let active = id != nil && id == current
-    let ink: NSColor = active ? .white : id == nil ? .tertiaryLabelColor : .labelColor
+    let unused = off.contains(uid)
+    let active = id != nil && id == current && !unused
+    let ink: NSColor = active ? .white : id == nil || unused ? .tertiaryLabelColor : .labelColor
 
-    let rank = NSTextField(labelWithString: "\(row + 1)")
+    let rank = NSTextField(labelWithString: unused ? "–" : "\(row + 1)")
     rank.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
     rank.textColor = active ? .white : .secondaryLabelColor
 
@@ -338,17 +364,26 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
     // State in words, not only color.
-    let status = NSTextField(labelWithString: active ? "In use" : id == nil ? "Not connected" : "")
+    let status = NSTextField(labelWithString: unused ? "Never used" : active ? "In use" : id == nil ? "Not connected" : "")
     status.font = .systemFont(ofSize: 11, weight: .medium)
     status.textColor = active ? .white.withAlphaComponent(0.85) : .tertiaryLabelColor
 
-    // Grip so it is obvious the row can be dragged.
+    let use = PointerButton(image: NSImage(systemSymbolName: unused ? "plus.circle" : "minus.circle",
+                                           accessibilityDescription: unused ? "Use again" : "Never use")!,
+                            target: self, action: #selector(toggleUse(_:)))
+    use.isBordered = false
+    use.tag = row
+    use.toolTip = unused ? "Use this device again" : "Never use this device"
+    use.contentTintColor = active ? .white.withAlphaComponent(0.85) : .secondaryLabelColor
+
+    // Grip so it is obvious the row can be dragged. Unused rows can't be dragged, so they get none.
     let grip = NSImageView(image: NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Drag")!)
     grip.contentTintColor = active ? .white.withAlphaComponent(0.7) : .tertiaryLabelColor
+    grip.alphaValue = unused ? 0 : 1 // keeps its space, so the ⊖ and ⊕ buttons line up
 
     let spacer = NSView()
     spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-    let cell = NSStackView(views: [rank, name, spacer, status, grip])
+    let cell = NSStackView(views: [rank, name, spacer, status, use, grip])
     cell.spacing = 10
     cell.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
     cell.wantsLayer = true
@@ -358,13 +393,13 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
   }
 
   func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-    String(row) as NSString
+    row < inUse ? String(row) as NSString : nil
   }
 
   func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int,
                  proposedDropOperation op: NSTableView.DropOperation) -> NSDragOperation {
     guard info.draggingSource as? NSTableView === table else { return [] } // no drags between the two lists
-    tableView.setDropRow(row, dropOperation: .above)
+    tableView.setDropRow(min(row, inUse), dropOperation: .above)
     return .move
   }
 
@@ -415,7 +450,7 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     stack.setCustomSpacing(20, after: tiles)
 
     for kind in kinds {
-      let header = sectionHeader(kind.title, hint: "Drag to set the order")
+      let header = sectionHeader(kind.title, hint: "Drag to order, ⊖ to never use")
       let list = DeviceList(kind: kind) { [weak self] in self?.applyPriority() }
       lists.append(list)
       stack.addArrangedSubview(header)
@@ -523,14 +558,16 @@ final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
       let connected = kind.connected()
       let current = kind.defaultDevice
       var order = kind.order
-      // New devices rank last, except the current default leads on first sight so first launch changes nothing.
+      let off = kind.off
+      // New devices rank last of those in use, except the current default leads on first sight so first launch
+      // changes nothing.
       let unseen = connected.keys.filter { !order.contains($0) }.sorted { a, _ in connected[a] == current }
       if !unseen.isEmpty {
-        order += unseen
+        order = order.filter { !off.contains($0) } + unseen + order.filter(off.contains)
         kind.order = order
         names = names.merging(unseen.map { ($0, string(connected[$0]!, kAudioObjectPropertyName) ?? $0) }) { $1 }
       }
-      if let best = order.first(where: { connected[$0] != nil }), connected[best] != current {
+      if let best = order.first(where: { connected[$0] != nil && !off.contains($0) }), connected[best] != current {
         kind.defaultDevice = connected[best]!
       }
     }

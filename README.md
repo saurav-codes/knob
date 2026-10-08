@@ -3,7 +3,7 @@
 A tiny macOS menu bar utility for the few audio switches you touch every day. One click opens a panel with big, obvious controls.
 
 - **Claude voice switch.** One big button turns Claude Code's spoken replies on or off. The knob in the menu bar is bright while Claude speaks and dull while it is silent.
-- **Speaker and mic priority.** Drag your devices into the order you want. Knob always switches to the highest ranked device that is connected, so plugging in a new device never steals your audio. Speakers and microphone have separate lists, so you can keep AirPods for sound and the MacBook mic for calls.
+- **Speaker and mic priority.** Drag your devices into the order you want. Knob always switches to the highest ranked device that is connected, so plugging in a new device never steals your audio. Speakers and microphone have separate lists, so you can keep AirPods for sound and the MacBook mic for calls. Click ⊖ on a device, such as earphones with a poor mic, and Knob never switches to it again, even when macOS does on connect. ⊕ brings it back.
 - **Mic mute tile and F5 key.** Click the Microphone tile, or press F5 (the dictation key on Mac laptops), to mute or unmute whichever mic is in use. A large icon on the laptop screen confirms the change. A switch in the panel gives F5 back to macOS dictation.
 
 ## Lightweight by design
