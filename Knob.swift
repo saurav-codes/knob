@@ -223,13 +223,14 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
   }
 }
 
-final class App: NSObject, NSApplicationDelegate {
+final class App: NSObject, NSApplicationDelegate, NSPopoverDelegate {
   let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
   let popover = NSPopover()
   let voiceButton = NSButton()
   let stack = NSStackView()
   let icons = [false: menuIcon(bright: false), true: menuIcon(bright: true)]
   var lists: [DeviceList] = []
+  var outsideClicks: Any?
   var names: [String: String] {
     get { UserDefaults.standard.dictionary(forKey: "names") as? [String: String] ?? [:] }
     set { UserDefaults.standard.set(newValue, forKey: "names") }
@@ -275,9 +276,10 @@ final class App: NSObject, NSApplicationDelegate {
     popover.contentViewController = NSViewController()
     popover.contentViewController!.view = stack
     popover.behavior = .transient
+    popover.delegate = self
 
     item.button?.target = self
-    item.button?.action = #selector(showPopover)
+    item.button?.action = #selector(togglePopover)
 
     // macOS switches to whatever was plugged in last; put our pick back on every device or default change.
     for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultOutputDevice,
@@ -309,9 +311,19 @@ final class App: NSObject, NSApplicationDelegate {
     refresh()
   }
 
-  @objc func showPopover() {
+  @objc func togglePopover() {
+    if popover.isShown { return popover.performClose(nil) }
     refresh(full: true) // the voice flag may have changed from a terminal
     popover.show(relativeTo: item.button!.bounds, of: item.button!, preferredEdge: .minY)
+    // A menu bar app is never the active app, so .transient alone misses clicks in other apps.
+    outsideClicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+      self?.popover.performClose(nil)
+    }
+  }
+
+  func popoverDidClose(_ notification: Notification) {
+    if let monitor = outsideClicks { NSEvent.removeMonitor(monitor) }
+    outsideClicks = nil
   }
 
   @objc func toggle() {
