@@ -6,8 +6,17 @@ app="$HOME/Applications/Knob.app"
 label=io.github.saurav-codes.knob
 agent="$HOME/Library/LaunchAgents/$label.plist"
 
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp Info.plist "$app/Contents/"
+
+iconset=$(mktemp -d)/Knob.iconset
+mkdir "$iconset"
+swift Icon.swift "$iconset/icon_512x512@2x.png"
+for px in 16 32 128 256 512; do
+  sips -z $px $px "$iconset/icon_512x512@2x.png" --out "$iconset/icon_${px}x${px}.png" >/dev/null
+  sips -z $((px * 2)) $((px * 2)) "$iconset/icon_512x512@2x.png" --out "$iconset/icon_${px}x${px}@2x.png" >/dev/null
+done
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/Knob.icns"
 swiftc -O Knob.swift -o "$app/Contents/MacOS/Knob"
 codesign -s - --force "$app"
 
