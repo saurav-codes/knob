@@ -4,6 +4,7 @@ A tiny macOS menu bar utility for the few audio switches you touch every day. On
 
 - **Claude voice switch.** One big button turns Claude Code's spoken replies on or off. The knob in the menu bar is bright while Claude speaks and dull while it is silent.
 - **Speaker and mic priority.** Drag your devices into the order you want. Knob always switches to the highest ranked device that is connected, so plugging in a new device never steals your audio. Speakers and microphone have separate lists, so you can keep AirPods for sound and the MacBook mic for calls.
+- **Mic mute tile and F5 key.** Click the Microphone tile, or press F5 (the dictation key on Mac laptops), to mute or unmute whichever mic is in use. A large icon on the laptop screen confirms the change. A switch in the panel gives F5 back to macOS dictation.
 
 ## Lightweight by design
 
@@ -39,6 +40,12 @@ Knob creates `~/.claude/voice-reply` when the voice is on and deletes it when it
 ```
 
 Turning the voice off also stops any reply that is already playing.
+
+## How the F5 key works
+
+In "Mute mic" mode, Knob uses `hidutil` to remap the dictation key to F20 and catches F20 with a global hotkey, so it needs no Accessibility or Input Monitoring permission. Switching to "Dictation", quitting Knob, or removing it clears the remap. The remap applies to all keyboards until then.
+
+See [DESIGN.md](DESIGN.md) for the design rules the app follows.
 
 ## License
 
