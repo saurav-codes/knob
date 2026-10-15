@@ -1,10 +1,11 @@
 # Knob
 
-A tiny macOS notch utility for the few audio switches you touch every day. Hover the notch and a panel with big, obvious controls drops out of it.
+A tiny macOS notch utility for the few audio switches you touch every day. Hover the notch and a Liquid Glass panel with big, obvious controls appears under it.
 
 - **Claude voice switch.** One big button turns Claude Code's spoken replies on or off.
 - **Speaker and mic priority.** Drag your devices into the order you want. Knob always switches to the highest ranked device that is connected, so plugging in a new device never steals your audio. Speakers and microphone have separate lists, so you can keep AirPods for sound and the MacBook mic for calls. Click ⊖ on a device, such as earphones with a poor mic, and Knob never switches to it again, even when macOS does on connect. ⊕ brings it back.
 - **Open ports.** A collapsed section whose title counts what is running. Expand it to see every TCP port your own processes listen on, such as dev servers an agent started and forgot, with the folder it was started in and how long it has run. Click a row to open it in your browser, or ⏹ to stop the process. macOS services like AirPlay are hidden.
+- **External display size.** Slide between every size your external monitor offers, from native to twice as big. Each stop says whether it is Sharp or Soft, and macOS keeps your pick for the next time you plug in.
 - **Lives in the notch.** No menu bar icon. Hover the notch to open the panel, and move the pointer away or click elsewhere to close it. Needs a Mac with a notch, and is out of reach while the lid is closed.
 - **Mic mute tile and F5 key.** Click the Microphone tile, or press F5 (the dictation key on Mac laptops), to mute or unmute whichever mic is in use. A large icon on the laptop screen confirms the change. A switch in the panel gives F5 back to macOS dictation.
 
@@ -16,7 +17,7 @@ Measured on an M2 MacBook Air: 0% CPU and zero wakeups while idle, about 13 MB o
 
 ## Install
 
-Needs macOS 13 or later and the Xcode command line tools (`xcode-select --install`).
+Needs macOS 26 or later and the Xcode command line tools (`xcode-select --install`).
 
 ```sh
 git clone https://github.com/saurav-codes/knob.git
@@ -46,6 +47,23 @@ Turning the voice off also stops any reply that is already playing.
 ## How the F5 key works
 
 In "Mute mic" mode, Knob uses `hidutil` to remap the dictation key to F20 and catches F20 with a global hotkey, so it needs no Accessibility or Input Monitoring permission. Switching to "Dictation", quitting Knob, or removing it clears the remap. The remap applies to all keyboards until then.
+
+## Sharp in-between sizes on a QHD monitor
+
+On Apple Silicon, macOS only offers a 1440p monitor two sharp sizes: native and 2×. A display override file adds sharp 1.1× to 1.8× stops, which then show up on Knob's slider. macOS draws each of them larger and shrinks the picture, so they cost more GPU than native or 2×.
+
+`display-overrides/DisplayProductID-5b95` is made for an LG HDR QHD (vendor `1e6d`, product `5b95`). Install it, then reboot:
+
+```sh
+sudo mkdir -p /Library/Displays/Contents/Resources/Overrides/DisplayVendorID-1e6d
+sudo cp display-overrides/DisplayProductID-5b95 /Library/Displays/Contents/Resources/Overrides/DisplayVendorID-1e6d/
+```
+
+To undo it, delete the folder and reboot:
+
+```sh
+sudo rm -r /Library/Displays/Contents/Resources/Overrides/DisplayVendorID-1e6d
+```
 
 See [DESIGN.md](DESIGN.md) for the design rules the app follows.
 

@@ -1,12 +1,11 @@
 // Knob: a tiny notch utility. A switch for Claude's spoken replies, speaker and mic priority lists,
-// and an F5 mic mute key. The voice hook speaks only while ~/.claude/voice-reply exists.
+// an external display scale slider, and an F5 mic mute key. The voice hook speaks only while ~/.claude/voice-reply exists.
 // Audio work runs only when CoreAudio reports a device change, and the mute key is a system hotkey; nothing polls.
 import AppKit
 import Carbon.HIToolbox
 import CoreAudio
 
 let flag = NSHomeDirectory() + "/.claude/voice-reply"
-let accent = NSColor(red: 0.11, green: 0.37, blue: 0.13, alpha: 1) // dark forest green
 let claudeOrange = NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1)
 let system = AudioObjectID(kAudioObjectSystemObject)
 
@@ -171,21 +170,106 @@ final class MuteHUD {
   }
 }
 
-final class PointerSegments: NSSegmentedControl {
+// Every button lights up under the pointer, so it is obvious what a click will hit.
+class HoverButton: NSButton {
+  var hovering = false { didSet { if hovering != oldValue { restyle() } } }
+
   override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    trackingAreas.forEach(removeTrackingArea)
+    addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                   owner: self))
+  }
+
+  override func mouseEntered(with event: NSEvent) { hovering = true }
+  override func mouseExited(with event: NSEvent) { hovering = false }
+
+  func restyle() {}
 }
 
-final class PointerButton: NSButton {
-  override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+// A closed panel gets no exit events, so it forgets every hover when it hides.
+func clearHover(_ view: NSView) {
+  (view as? HoverButton)?.hovering = false
+  (view as? RowCell)?.hovering = false
+  view.subviews.forEach(clearHover)
+}
+
+// A round icon button, such as ⊖ on a device or ⏹ on a port.
+final class IconButton: HoverButton {
+  convenience init(symbol: String, label: String, target: AnyObject, action: Selector) {
+    self.init(frame: .zero)
+    self.target = target
+    self.action = action
+    image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+    symbolConfiguration = .init(pointSize: 15, weight: .regular)
+    isBordered = false
+    wantsLayer = true
+    layer?.cornerRadius = 15
+    widthAnchor.constraint(equalToConstant: 30).isActive = true
+    heightAnchor.constraint(equalToConstant: 30).isActive = true
+    restyle()
+  }
+
+  override func restyle() {
+    contentTintColor = hovering ? .labelColor : .secondaryLabelColor
+    layer?.backgroundColor = hovering ? NSColor.labelColor.withAlphaComponent(0.15).cgColor : nil
+  }
+}
+
+// Small text for rare actions such as Quit. It brightens under the pointer.
+final class TextButton: HoverButton {
+  var text = ""
+
+  convenience init(_ text: String, target: AnyObject, action: Selector) {
+    self.init(frame: .zero)
+    self.text = text
+    self.target = target
+    self.action = action
+    isBordered = false
+    restyle()
+  }
+
+  override func restyle() {
+    attributedTitle = NSAttributedString(string: text, attributes: [
+      .font: NSFont.systemFont(ofSize: 11), .foregroundColor: hovering ? NSColor.labelColor : .tertiaryLabelColor])
+  }
+}
+
+// A big rounded button. The selected one turns solid white, like an active switch in Control Center.
+final class Pill: HoverButton {
+  var selected = false { didSet { restyle() } }
+  var text = ""
+
+  convenience init(_ text: String, target: AnyObject, action: Selector) {
+    self.init(frame: .zero)
+    self.text = text
+    self.target = target
+    self.action = action
+    isBordered = false
+    wantsLayer = true
+    layer?.cornerRadius = 12
+    heightAnchor.constraint(equalToConstant: 40).isActive = true
+    restyle()
+  }
+
+  override func restyle() {
+    let ink: NSColor = selected ? .black : .labelColor
+    attributedTitle = NSAttributedString(string: text, attributes: [
+      .font: NSFont.systemFont(ofSize: 13, weight: selected ? .semibold : .medium), .foregroundColor: ink])
+    let rest = NSColor.labelColor.withAlphaComponent(hovering ? 0.18 : 0.1)
+    layer?.backgroundColor = (selected ? NSColor.white.withAlphaComponent(hovering ? 1 : 0.92) : rest).cgColor
+  }
 }
 
 // A big square switch in the style of Control Center: icon, name, and its state in words.
-final class Tile: NSButton {
+final class Tile: HoverButton {
   let icon = NSImageView()
   let name = NSTextField(labelWithString: "")
   let detail = NSTextField(labelWithString: "")
+  var fill: NSColor?
 
-  override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
   override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil } // labels never eat the click
 
   convenience init(target: AnyObject, action: Selector) {
@@ -195,8 +279,8 @@ final class Tile: NSButton {
     title = ""
     isBordered = false
     wantsLayer = true
-    layer?.cornerRadius = 16
-    heightAnchor.constraint(equalToConstant: 104).isActive = true
+    layer?.cornerRadius = 22
+    heightAnchor.constraint(equalToConstant: 108).isActive = true
     // Every icon gets the same fixed box, so both tiles line up whatever the glyph.
     icon.imageScaling = .scaleProportionallyUpOrDown
     icon.widthAnchor.constraint(equalToConstant: 30).isActive = true
@@ -222,13 +306,99 @@ final class Tile: NSButton {
     name.textColor = ink
     detail.stringValue = text
     detail.textColor = ink.withAlphaComponent(0.75)
-    layer?.backgroundColor = (fill ?? NSColor.labelColor.withAlphaComponent(0.08)).cgColor
+    self.fill = fill
+    restyle()
+  }
+
+  override func restyle() {
+    let color = fill.map { hovering ? $0.blended(withFraction: 0.12, of: .white)! : $0 }
+      ?? NSColor.labelColor.withAlphaComponent(hovering ? 0.16 : 0.1)
+    layer?.backgroundColor = color.cgColor
+  }
+}
+
+// A Control Center style slider: a thick pill with a handle that fills from the left and snaps to stops. It reports
+// the stop on release, since every display mode change blanks the screen for a moment.
+final class PillSlider: NSView {
+  var count = 2 { didSet { needsDisplay = true } }
+  var index = 0 { didSet { needsDisplay = true } }
+  var onMove: (Int) -> Void = { _ in }
+  var onRelease: (Int) -> Void = { _ in }
+
+  static let iconSpace: CGFloat = 26 // room for the small and large A outside the track
+
+  override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 34) }
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+  override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
+
+  func glyph(_ symbol: String, size: CGFloat) -> NSImage {
+    NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!
+      .withSymbolConfiguration(.init(pointSize: size, weight: .semibold)
+        .applying(.init(paletteColors: [.secondaryLabelColor])))!
+  }
+
+  var trackRect: NSRect { bounds.insetBy(dx: Self.iconSpace, dy: 0) }
+
+  // Where stop i sits: the center of the handle.
+  func x(of i: Int) -> CGFloat {
+    let track = trackRect, r = track.height / 2
+    return track.minX + r + (track.width - 2 * r) * CGFloat(i) / CGFloat(max(count - 1, 1))
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    let track = trackRect, r = track.height / 2
+    NSColor.labelColor.withAlphaComponent(0.12).setFill()
+    NSBezierPath(roundedRect: track, xRadius: r, yRadius: r).fill()
+    let handle = x(of: index)
+    NSColor.white.withAlphaComponent(0.45).setFill()
+    NSBezierPath(roundedRect: NSRect(x: track.minX, y: track.minY, width: handle + r - track.minX, height: track.height),
+                 xRadius: r, yRadius: r).fill()
+    // A dot for each stop ahead, so you can see where it will snap.
+    NSColor.labelColor.withAlphaComponent(0.35).setFill()
+    for i in index + 1 ..< max(count, index + 1) {
+      NSBezierPath(ovalIn: NSRect(x: x(of: i) - 2.5, y: r - 2.5, width: 5, height: 5)).fill()
+    }
+    // The handle you grab: a solid white circle that floats on a soft shadow.
+    NSGraphicsContext.saveGraphicsState()
+    let shadow = NSShadow()
+    shadow.shadowColor = .black.withAlphaComponent(0.35)
+    shadow.shadowBlurRadius = 4
+    shadow.shadowOffset = NSSize(width: 0, height: -1)
+    shadow.set()
+    NSColor.white.setFill()
+    NSBezierPath(ovalIn: NSRect(x: handle - r + 3, y: track.minY + 3, width: 2 * r - 6, height: 2 * r - 6)).fill()
+    NSGraphicsContext.restoreGraphicsState()
+    let small = glyph("textformat.size.smaller", size: 12)
+    small.draw(in: NSRect(x: (Self.iconSpace - small.size.width) / 2 - 2, y: r - small.size.height / 2,
+                          width: small.size.width, height: small.size.height))
+    let large = glyph("textformat.size.larger", size: 16)
+    large.draw(in: NSRect(x: bounds.width - (Self.iconSpace + large.size.width) / 2 + 2, y: r - large.size.height / 2,
+                          width: large.size.width, height: large.size.height))
+  }
+
+  func track(_ event: NSEvent) {
+    let px = convert(event.locationInWindow, from: nil).x
+    index = (0 ..< count).min { abs(x(of: $0) - px) < abs(x(of: $1) - px) } ?? 0
+    onMove(index)
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    NSCursor.closedHand.push()
+    track(event)
+  }
+
+  override func mouseDragged(with event: NSEvent) { track(event) }
+
+  override func mouseUp(with event: NSEvent) {
+    NSCursor.pop()
+    track(event)
+    onRelease(index)
   }
 }
 
 func headerText(_ title: String, hint: String? = nil) -> NSAttributedString {
   let text = NSMutableAttributedString(string: title, attributes: [
-    .font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: NSColor.labelColor])
+    .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor])
   if let hint {
     text.append(NSAttributedString(string: "   \(hint)", attributes: [
       .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
@@ -236,16 +406,15 @@ func headerText(_ title: String, hint: String? = nil) -> NSAttributedString {
   return text
 }
 
-func sectionHeader(_ title: String, hint: String? = nil) -> NSTextField {
-  NSTextField(labelWithAttributedString: headerText(title, hint: hint))
+func sectionHeader(_ title: String) -> NSTextField {
+  NSTextField(labelWithAttributedString: headerText(title))
 }
 
 // A section title that shows or hides the section below it, with a chevron at the right edge.
-final class Disclosure: NSButton {
+final class Disclosure: HoverButton {
   let label = NSTextField(labelWithString: "")
   let chevron = NSImageView()
 
-  override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
   override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
 
   convenience init(target: AnyObject, action: Selector) {
@@ -254,16 +423,23 @@ final class Disclosure: NSButton {
     self.action = action
     title = ""
     isBordered = false
+    wantsLayer = true
+    layer?.cornerRadius = 12
     chevron.contentTintColor = .secondaryLabelColor
     let row = NSStackView(views: [label, NSView(), chevron])
     row.translatesAutoresizingMaskIntoConstraints = false
     addSubview(row)
     NSLayoutConstraint.activate([
-      heightAnchor.constraint(equalToConstant: 24),
-      row.leadingAnchor.constraint(equalTo: leadingAnchor),
-      row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+      heightAnchor.constraint(equalToConstant: 40),
+      row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+      row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
       row.centerYAnchor.constraint(equalTo: centerYAnchor),
     ])
+    restyle()
+  }
+
+  override func restyle() {
+    layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(hovering ? 0.16 : 0.08).cgColor
   }
 
   func show(_ text: NSAttributedString, expanded: Bool) {
@@ -274,9 +450,50 @@ final class Disclosure: NSButton {
   }
 }
 
-// Inner lists never scroll themselves, so the wheel goes to the panel's own scroll view.
+// Inner lists never scroll themselves, so the wheel goes to the panel's own scroll view. Rows sit straight
+// on the glass, with a little inset so the pill of the row in use has room.
 final class PassScroll: NSScrollView {
+  static let inset: CGFloat = 4
+
   override func scrollWheel(with event: NSEvent) { nextResponder?.scrollWheel(with: event) }
+
+  func styleAsList() {
+    drawsBackground = false
+    hasVerticalScroller = false
+    automaticallyAdjustsContentInsets = false
+    contentInsets = NSEdgeInsets(top: Self.inset, left: 0, bottom: Self.inset, right: 0)
+  }
+}
+
+// A list row: the device in use gets a soft pill, and any row lights up under the pointer.
+final class RowCell: NSStackView {
+  var highlighted = false { didSet { restyle() } }
+  var hovering = false { didSet { restyle() } }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    trackingAreas.forEach(removeTrackingArea)
+    addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                   owner: self))
+  }
+
+  override func mouseEntered(with event: NSEvent) { hovering = true }
+  override func mouseExited(with event: NSEvent) { hovering = false }
+
+  func restyle() {
+    let alpha: CGFloat = highlighted ? 0.14 : hovering ? 0.07 : 0
+    layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(alpha).cgColor
+  }
+}
+
+func rowCell(_ views: [NSView], highlighted: Bool = false) -> RowCell {
+  let cell = RowCell(views: views)
+  cell.spacing = 8
+  cell.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 6)
+  cell.wantsLayer = true
+  cell.layer?.cornerRadius = 12
+  cell.highlighted = highlighted
+  return cell
 }
 
 // Takes clicks and keys without making Knob the active app.
@@ -311,7 +528,7 @@ final class PointerTable: NSTableView {
 
 // One ranked device list. Drag a row to reorder, or click it to make it first.
 final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-  static let rowHeight: CGFloat = 38
+  static let rowHeight: CGFloat = 40
   let kind: Kind
   let table = PointerTable()
   let scroll = PassScroll()
@@ -335,7 +552,8 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     table.backgroundColor = .clear
     table.selectionHighlightStyle = .none
     table.rowHeight = Self.rowHeight
-    table.intercellSpacing = NSSize(width: 0, height: 4)
+    table.intercellSpacing = NSSize(width: 0, height: 2)
+    table.toolTip = "Drag to set the order. Knob uses the first one that is connected."
     table.registerForDraggedTypes([.string])
     table.setDraggingSourceOperationMask(.move, forLocal: true)
     table.dataSource = self
@@ -343,8 +561,7 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     table.target = self
     table.action = #selector(clicked)
     scroll.documentView = table
-    scroll.drawsBackground = false
-    scroll.hasVerticalScroller = false
+    scroll.styleAsList()
     height.isActive = true
   }
 
@@ -355,7 +572,7 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     connected = kind.connected()
     current = kind.defaultDevice
     table.reloadData()
-    height.constant = CGFloat(order.count) * (Self.rowHeight + 4)
+    height.constant = CGFloat(order.count) * (Self.rowHeight + 2) + PassScroll.inset * 2
   }
 
   func move(from: Int, to: Int) {
@@ -391,44 +608,33 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let id = connected[uid]
     let unused = off.contains(uid)
     let active = id != nil && id == current && !unused
-    let ink: NSColor = active ? .white : id == nil || unused ? .tertiaryLabelColor : .labelColor
+    let dim = id == nil || unused
 
-    let rank = NSTextField(labelWithString: unused ? "–" : "\(row + 1)")
-    rank.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
-    rank.textColor = active ? .white : .secondaryLabelColor
+    let check = NSImageView(image: NSImage(systemSymbolName: "checkmark", accessibilityDescription: "In use")!)
+    check.symbolConfiguration = .init(pointSize: 12, weight: .bold)
+    check.contentTintColor = .labelColor
+    check.alphaValue = active ? 1 : 0 // keeps its space, so names line up
+    check.widthAnchor.constraint(equalToConstant: 14).isActive = true
 
     let name = NSTextField(labelWithString: names[uid] ?? uid)
-    name.font = .systemFont(ofSize: 14, weight: active ? .semibold : .regular)
-    name.textColor = ink
+    name.font = .systemFont(ofSize: 13, weight: active ? .semibold : .regular)
+    name.textColor = dim ? .tertiaryLabelColor : .labelColor
     name.lineBreakMode = .byTruncatingTail
     name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-    // State in words, not only color.
+    // State in words, not only the checkmark.
     let status = NSTextField(labelWithString: unused ? "Never used" : active ? "In use" : id == nil ? "Not connected" : "")
-    status.font = .systemFont(ofSize: 11, weight: .medium)
-    status.textColor = active ? .white.withAlphaComponent(0.85) : .tertiaryLabelColor
+    status.font = .systemFont(ofSize: 11)
+    status.textColor = .tertiaryLabelColor
 
-    let use = PointerButton(image: NSImage(systemSymbolName: unused ? "plus.circle" : "minus.circle",
-                                           accessibilityDescription: unused ? "Use again" : "Never use")!,
-                            target: self, action: #selector(toggleUse(_:)))
-    use.isBordered = false
+    let use = IconButton(symbol: unused ? "plus.circle" : "minus.circle", label: unused ? "Use again" : "Never use",
+                         target: self, action: #selector(toggleUse(_:)))
     use.tag = row
     use.toolTip = unused ? "Use this device again" : "Never use this device"
-    use.contentTintColor = active ? .white.withAlphaComponent(0.85) : .secondaryLabelColor
-
-    // Grip so it is obvious the row can be dragged. Unused rows can't be dragged, so they get none.
-    let grip = NSImageView(image: NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Drag")!)
-    grip.contentTintColor = active ? .white.withAlphaComponent(0.7) : .tertiaryLabelColor
-    grip.alphaValue = unused ? 0 : 1 // keeps its space, so the ⊖ and ⊕ buttons line up
 
     let spacer = NSView()
     spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-    let cell = NSStackView(views: [rank, name, spacer, status, use, grip])
-    cell.spacing = 10
-    cell.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
-    cell.wantsLayer = true
-    cell.layer?.cornerRadius = 10
-    cell.layer?.backgroundColor = (active ? accent : NSColor.labelColor.withAlphaComponent(0.06)).cgColor
+    let cell = rowCell([check, name, spacer, status, use], highlighted: active)
     return cell
   }
 
@@ -510,7 +716,7 @@ func scanPorts() -> [Listener] {
 // Open ports, collapsed under a title that counts them. Click a row to open it in the browser,
 // or stop the process that holds it.
 final class PortList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-  static let rowHeight: CGFloat = 38
+  static let rowHeight: CGFloat = 40
   lazy var header = Disclosure(target: self, action: #selector(toggleExpanded))
   var expanded = false
   let table = PointerTable()
@@ -537,14 +743,13 @@ final class PortList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     table.backgroundColor = .clear
     table.selectionHighlightStyle = .none
     table.rowHeight = Self.rowHeight
-    table.intercellSpacing = NSSize(width: 0, height: 4)
+    table.intercellSpacing = NSSize(width: 0, height: 2)
     table.dataSource = self
     table.delegate = self
     table.target = self
     table.action = #selector(clicked)
     scroll.documentView = table
-    scroll.drawsBackground = false
-    scroll.hasVerticalScroller = false
+    scroll.styleAsList()
     height.isActive = true
     empty.font = .systemFont(ofSize: 13)
     empty.textColor = .tertiaryLabelColor
@@ -557,7 +762,7 @@ final class PortList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     scroll.isHidden = !expanded || ports.isEmpty
     (header.superview as? NSStackView)?.setCustomSpacing(expanded ? 8 : 18, after: header)
     empty.isHidden = !expanded || !ports.isEmpty
-    height.constant = CGFloat(count) * (Self.rowHeight + 4)
+    height.constant = CGFloat(count) * (Self.rowHeight + 2) + PassScroll.inset * 2
     onChange()
   }
 
@@ -600,55 +805,133 @@ final class PortList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
   func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
     let listener = ports[row]
     let number = NSTextField(labelWithString: ":\(listener.port)")
-    number.font = .monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
-    number.widthAnchor.constraint(equalToConstant: 64).isActive = true
+    number.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+    number.widthAnchor.constraint(equalToConstant: 56).isActive = true
 
     // The folder it was started in says which project it belongs to; the home folder or / says nothing.
     let folder = [NSHomeDirectory(), "/"].contains(listener.cwd) ? "" : (listener.cwd as NSString).lastPathComponent
     let name = NSTextField(labelWithString: folder.isEmpty ? listener.name : "\(listener.name) · \(folder)")
-    name.font = .systemFont(ofSize: 14)
+    name.font = .systemFont(ofSize: 13)
+    name.textColor = .secondaryLabelColor
     name.lineBreakMode = .byTruncatingTail
     name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
     let uptime = Date().timeIntervalSince(listener.started)
     let since = NSTextField(labelWithString: uptime < 60 ? "Just now" : age.string(from: uptime) ?? "")
-    since.font = .systemFont(ofSize: 11, weight: .medium)
+    since.font = .systemFont(ofSize: 11)
     since.textColor = .tertiaryLabelColor
 
-    let open = PointerButton(image: NSImage(systemSymbolName: "arrow.up.forward.app", accessibilityDescription: "Open in browser")!,
-                             target: self, action: #selector(openPort(_:)))
+    let open = IconButton(symbol: "arrow.up.forward.app", label: "Open in browser", target: self, action: #selector(openPort(_:)))
     open.toolTip = "Open localhost:\(listener.port) in your browser"
-    let stop = PointerButton(image: NSImage(systemSymbolName: "stop.circle", accessibilityDescription: "Stop")!,
-                             target: self, action: #selector(stop(_:)))
+    let stop = IconButton(symbol: "stop.circle", label: "Stop", target: self, action: #selector(stop(_:)))
     stop.toolTip = "Stop \(listener.name) (PID \(listener.pid))"
-    for button in [open, stop] {
-      button.isBordered = false
-      button.tag = row
-      button.contentTintColor = .secondaryLabelColor
-    }
+    open.tag = row
+    stop.tag = row
 
     let spacer = NSView()
     spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-    let cell = NSStackView(views: [number, name, spacer, since, open, stop])
-    cell.spacing = 10
-    cell.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
-    cell.wantsLayer = true
-    cell.layer?.cornerRadius = 10
-    cell.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
+    let cell = rowCell([number, name, spacer, since, open, stop])
     cell.toolTip = listener.cwd.isEmpty ? nil : "Started in \(listener.cwd)"
     return cell
   }
 }
 
+// One stop on the external display's scale slider. Soft modes are drawn at 1x and stretched by the display.
+struct Scale {
+  let mode: CGDisplayMode
+  let ratio: Double
+  let sharp: Bool
+}
+
+func externalDisplay() -> CGDirectDisplayID? {
+  var count = UInt32(0)
+  var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+  CGGetOnlineDisplayList(16, &ids, &count)
+  return ids.prefix(Int(count)).first { CGDisplayIsBuiltin($0) == 0 }
+}
+
+// Modes with the panel's shape, from native size to twice as big, best refresh rate first.
+func scales(of display: CGDirectDisplayID) -> [Scale] {
+  let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
+  // Under 50 Hz feels laggy, such as the 30 Hz 4K input some QHD monitors accept. Some displays report 0.
+  let usable = (CGDisplayCopyAllDisplayModes(display, options) as? [CGDisplayMode] ?? []).filter {
+    $0.isUsableForDesktopGUI() && ($0.refreshRate == 0 || $0.refreshRate >= 50)
+  }
+  guard let native = usable.filter({ $0.pixelWidth == $0.width }).max(by: { $0.width < $1.width }) else { return [] }
+  var best: [Int: CGDisplayMode] = [:]
+  for mode in usable where mode.width * native.height == mode.height * native.width && mode.width * 2 >= native.width {
+    if let old = best[mode.width], (old.pixelWidth, old.refreshRate) >= (mode.pixelWidth, mode.refreshRate) { continue }
+    best[mode.width] = mode
+  }
+  return best.values.sorted { $0.width > $1.width }.map {
+    Scale(mode: $0, ratio: Double(native.width) / Double($0.width), sharp: $0.pixelWidth >= native.width)
+  }
+}
+
+// How big everything looks on the external display. Applies on release, since each change blanks the screen
+// for a moment, and macOS keeps it for the next time the display is plugged in.
+final class DisplayScale: NSObject {
+  let value = NSTextField(labelWithString: "")
+  lazy var header = NSStackView(views: [sectionHeader("External display"), NSView(), value])
+  let slider = PillSlider()
+  var display: CGDirectDisplayID?
+  var stops: [Scale] = []
+  let number: NumberFormatter = {
+    let format = NumberFormatter()
+    format.maximumFractionDigits = 2
+    return format
+  }()
+
+  override init() {
+    super.init()
+    slider.onMove = { [weak self] in self?.show($0) }
+    slider.onRelease = { [weak self] in self?.apply($0) }
+    value.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+    value.textColor = .secondaryLabelColor
+  }
+
+  // Read from the system each time, so a change made in System Settings shows here too.
+  func reload() {
+    display = externalDisplay()
+    stops = display.map(scales(of:)) ?? []
+    let missing = stops.count < 2
+    [header, slider].forEach { $0.isHidden = missing }
+    guard !missing, let display, let current = CGDisplayCopyDisplayMode(display) else { return }
+    slider.count = stops.count
+    slider.index = stops.firstIndex { $0.mode.width == current.width && $0.mode.pixelWidth == current.pixelWidth }
+      ?? stops.indices.min { abs(stops[$0].mode.width - current.width) < abs(stops[$1].mode.width - current.width) }!
+    show(slider.index)
+  }
+
+  func show(_ index: Int) {
+    let stop = stops[index]
+    value.stringValue = "\(number.string(from: stop.ratio as NSNumber)!)×  " + (stop.sharp ? "Sharp" : "Soft")
+    value.toolTip = "Looks like \(stop.mode.width) × \(stop.mode.height)"
+  }
+
+  func apply(_ index: Int) {
+    guard let display, let current = CGDisplayCopyDisplayMode(display) else { return }
+    let mode = stops[index].mode
+    if mode.width == current.width, mode.pixelWidth == current.pixelWidth { return }
+    var config: CGDisplayConfigRef?
+    guard CGBeginDisplayConfiguration(&config) == .success else { return }
+    CGConfigureDisplayWithDisplayMode(config, display, mode, nil)
+    CGCompleteDisplayConfiguration(config, .permanently)
+  }
+}
+
 final class App: NSObject, NSApplicationDelegate {
-  // The panel drops out of the notch. A black strip sits in the notch so hovering it opens the panel.
+  // A glass card floats just under the notch. A black strip sits in the notch so hovering it opens the panel,
+  // and the panel window spans the gap between them so the pointer can cross it.
   let notchTrigger = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                    backing: .buffered, defer: true)
   let notchPanel = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                  backing: .buffered, defer: true)
   let notchBody = HoverView()
+  let glass = NSGlassEffectView()
+  static let gap: CGFloat = 6
   var notch = NSRect.zero
-  lazy var outerTop = outer.topAnchor.constraint(equalTo: notchBody.topAnchor)
+  lazy var glassTop = glass.topAnchor.constraint(equalTo: notchBody.topAnchor)
   let sparkTemplate: NSImage = {
     let image = spark(size: 30, color: .black)
     image.isTemplate = true
@@ -661,7 +944,9 @@ final class App: NSObject, NSApplicationDelegate {
   var lists: [DeviceList] = []
   lazy var ports = PortList { [weak self] in self?.resize() }
   var portTimer: Timer?
-  let f5Mode = PointerSegments(labels: ["Dictation", "Mute mic"], trackingMode: .selectOne, target: nil, action: nil)
+  let displayScale = DisplayScale()
+  lazy var f5Dictation = Pill("Dictation", target: self, action: #selector(changeF5Mode(_:)))
+  lazy var f5Mute = Pill("Mute mic", target: self, action: #selector(changeF5Mode(_:)))
   lazy var hud = MuteHUD()
   var hotKeys: [EventHotKeyRef?] = []
   var mutedMic: AudioDeviceID? // set while Knob holds the mic muted, so the mute can follow a device switch
@@ -677,49 +962,48 @@ final class App: NSObject, NSApplicationDelegate {
     stack.orientation = .vertical
     stack.alignment = .leading
     stack.spacing = 8
-    stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 14, right: 16)
-    stack.widthAnchor.constraint(equalToConstant: 340).isActive = true
+    stack.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 10, right: 14)
+    stack.widthAnchor.constraint(equalToConstant: 360).isActive = true
 
     let tiles = NSStackView(views: [voiceTile, micTile])
     tiles.distribution = .fillEqually
     tiles.spacing = 10
     stack.addArrangedSubview(tiles)
-    stack.setCustomSpacing(20, after: tiles)
+    stack.setCustomSpacing(18, after: tiles)
 
     for kind in kinds {
-      let header = sectionHeader(kind.title, hint: "Drag to order, ⊖ to never use")
+      let header = sectionHeader(kind.title)
       let list = DeviceList(kind: kind) { [weak self] in self?.applyPriority() }
       lists.append(list)
       stack.addArrangedSubview(header)
       stack.addArrangedSubview(list.scroll)
-      stack.setCustomSpacing(18, after: list.scroll)
+      stack.setCustomSpacing(16, after: list.scroll)
     }
 
     stack.addArrangedSubview(ports.header)
     stack.addArrangedSubview(ports.scroll)
     stack.addArrangedSubview(ports.empty)
-    stack.setCustomSpacing(18, after: ports.scroll)
-    stack.setCustomSpacing(18, after: ports.empty)
+    stack.setCustomSpacing(16, after: ports.scroll)
+    stack.setCustomSpacing(16, after: ports.empty)
 
-    f5Mode.controlSize = .large
-    f5Mode.font = .systemFont(ofSize: 14)
-    f5Mode.segmentDistribution = .fillEqually
-    f5Mode.selectedSegmentBezelColor = .controlAccentColor // the notch panel is never key, which would grey it out
-    f5Mode.target = self
-    f5Mode.action = #selector(changeF5Mode)
-    f5Mode.selectedSegment = UserDefaults.standard.bool(forKey: "f5Mute") ? 1 : 0
-    let f5Header = sectionHeader("F5 key", hint: "The 🎤 key on Mac laptops")
-    stack.addArrangedSubview(f5Header)
-    stack.addArrangedSubview(f5Mode)
-    stack.setCustomSpacing(20, after: f5Mode)
+    stack.addArrangedSubview(displayScale.header)
+    stack.addArrangedSubview(displayScale.slider)
+    stack.setCustomSpacing(16, after: displayScale.slider)
 
-    let quit = PointerButton(title: "Quit Knob", target: NSApp, action: #selector(NSApplication.terminate(_:)))
-    quit.isBordered = false
-    quit.contentTintColor = .secondaryLabelColor
-    quit.font = .systemFont(ofSize: 12)
+    let f5Title = sectionHeader("F5 key")
+    f5Title.toolTip = "The 🎤 key on Mac laptops"
+    let f5Row = NSStackView(views: [f5Dictation, f5Mute])
+    f5Row.distribution = .fillEqually
+    f5Row.spacing = 8
+    showF5Mode()
+    stack.addArrangedSubview(f5Title)
+    stack.addArrangedSubview(f5Row)
+    stack.setCustomSpacing(16, after: f5Row)
+
+    let quit = TextButton("Quit Knob", target: NSApp, action: #selector(NSApplication.terminate(_:)))
     stack.addArrangedSubview(quit)
-    for view in [tiles, f5Mode, ports.header, ports.scroll] + lists.map(\.scroll) {
-      view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
+    for view in [tiles, f5Row, ports.header, ports.scroll, displayScale.header, displayScale.slider] + lists.map(\.scroll) {
+      view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
     }
     // The panel scrolls once it would be taller than the screen.
     let document = FlippedView()
@@ -751,24 +1035,25 @@ final class App: NSObject, NSApplicationDelegate {
     strip.layer?.backgroundColor = NSColor.black.cgColor
     strip.onEnter = { [weak self] in self?.showNotchPanel() }
     notchTrigger.contentView = strip
-    notchBody.wantsLayer = true
-    notchBody.layer?.backgroundColor = NSColor.black.cgColor
-    notchBody.layer?.cornerRadius = 22
-    notchBody.layer?.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner] // bottom corners only
     notchBody.onExit = { [weak self] in self?.hideNotchPanelIfLeft() }
     notchPanel.contentView = notchBody
-    outer.translatesAutoresizingMaskIntoConstraints = false
-    notchBody.addSubview(outer)
+    glass.cornerRadius = 26
+    glass.contentView = outer
+    glass.translatesAutoresizingMaskIntoConstraints = false
+    notchBody.addSubview(glass)
     NSLayoutConstraint.activate([
-      outerTop,
-      outer.bottomAnchor.constraint(equalTo: notchBody.bottomAnchor),
-      outer.leadingAnchor.constraint(equalTo: notchBody.leadingAnchor),
-      outer.trailingAnchor.constraint(equalTo: notchBody.trailingAnchor),
+      glassTop,
+      glass.bottomAnchor.constraint(equalTo: notchBody.bottomAnchor),
+      glass.leadingAnchor.constraint(equalTo: notchBody.leadingAnchor),
+      glass.trailingAnchor.constraint(equalTo: notchBody.trailingAnchor),
     ])
     notchPanel.appearance = NSAppearance(named: .darkAqua)
     placeNotch()
     NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
-                                           object: nil, queue: .main) { [weak self] _ in self?.placeNotch() }
+                                           object: nil, queue: .main) { [weak self] _ in
+      self?.placeNotch()
+      self?.refresh()
+    }
 
 
     // macOS switches to whatever was plugged in last; put our pick back on every device or default change.
@@ -788,9 +1073,16 @@ final class App: NSObject, NSApplicationDelegate {
     if !hotKeys.isEmpty { remapDictationKey(false) } // give F5 back to dictation
   }
 
-  @objc func changeF5Mode() {
-    UserDefaults.standard.set(f5Mode.selectedSegment == 1, forKey: "f5Mute")
+  @objc func changeF5Mode(_ sender: Pill) {
+    UserDefaults.standard.set(sender === f5Mute, forKey: "f5Mute")
+    showF5Mode()
     applyF5Mode()
+  }
+
+  func showF5Mode() {
+    let mute = UserDefaults.standard.bool(forKey: "f5Mute")
+    f5Dictation.selected = !mute
+    f5Mute.selected = mute
   }
 
   func applyF5Mode() {
@@ -870,17 +1162,18 @@ final class App: NSObject, NSApplicationDelegate {
   // The notch is the gap between the two usable areas at the top of a notched screen. With the lid
   // closed there is no notch, so there is nothing to hover until it opens again.
   func placeNotch() {
-    hideNotchPanel()
     guard let screen = NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil }),
           let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else {
+      hideNotchPanel()
       notch = .zero
       return notchTrigger.orderOut(nil)
     }
     notch = NSRect(x: left.maxX, y: screen.frame.maxY - screen.safeAreaInsets.top,
                    width: right.minX - left.maxX, height: screen.safeAreaInsets.top)
-    outerTop.constant = notch.height
+    glassTop.constant = notch.height + Self.gap
     notchTrigger.setFrame(notch, display: true)
     notchTrigger.orderFrontRegardless()
+    if isShowing { resize() } // a new display scale moves the notch, and the panel should stay open under the pointer
   }
 
   func showNotchPanel() {
@@ -919,6 +1212,7 @@ final class App: NSObject, NSApplicationDelegate {
   }
 
   func didHidePanel() {
+    clearHover(notchBody)
     if let monitor = outsideClicks { NSEvent.removeMonitor(monitor) }
     outsideClicks = nil
     portTimer?.invalidate()
@@ -950,6 +1244,7 @@ final class App: NSObject, NSApplicationDelegate {
     micTile.show(image: symbol, title: "Microphone", state: muted.map { $0 ? "Muted" : "Live" } ?? "Can't mute",
                  fill: muted == true ? .systemRed : nil)
     lists.forEach { $0.reload(names: names) }
+    displayScale.reload()
     ports.update()
   }
 
@@ -957,7 +1252,7 @@ final class App: NSObject, NSApplicationDelegate {
   func resize() {
     let fit = stack.fittingSize
     guard let screen = NSScreen.screens.first(where: { $0.frame.intersects(notch) }) else { return }
-    let height = notch.height + min(fit.height, screen.visibleFrame.height - 30)
+    let height = notch.height + Self.gap + min(fit.height, screen.visibleFrame.height - 30)
     notchPanel.setFrame(NSRect(x: notch.midX - fit.width / 2, y: notch.maxY - height, width: fit.width, height: height),
                         display: true)
   }
