@@ -48,23 +48,6 @@ Turning the voice off also stops any reply that is already playing.
 
 In "Mute mic" mode, Knob uses `hidutil` to remap the dictation key to F20 and catches F20 with a global hotkey, so it needs no Accessibility or Input Monitoring permission. Switching to "Dictation", quitting Knob, or removing it clears the remap. The remap applies to all keyboards until then.
 
-## Sharp in-between sizes on a QHD monitor
-
-On Apple Silicon, macOS only offers a 1440p monitor two sharp sizes: native and 2×. A display override file adds sharp 1.1× to 1.8× stops, which then show up on Knob's slider. macOS draws each of them larger and shrinks the picture, so they cost more GPU than native or 2×.
-
-`display-overrides/DisplayProductID-5b95` is made for an LG HDR QHD (vendor `1e6d`, product `5b95`). Install it, then reboot:
-
-```sh
-sudo mkdir -p /Library/Displays/Contents/Resources/Overrides/DisplayVendorID-1e6d
-sudo cp display-overrides/DisplayProductID-5b95 /Library/Displays/Contents/Resources/Overrides/DisplayVendorID-1e6d/
-```
-
-To undo it, delete the folder and reboot:
-
-```sh
-sudo rm -r /Library/Displays/Contents/Resources/Overrides/DisplayVendorID-1e6d
-```
-
 See [DESIGN.md](DESIGN.md) for the design rules the app follows.
 
 ## License
