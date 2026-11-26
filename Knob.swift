@@ -10,6 +10,27 @@ let flag = NSHomeDirectory() + "/.claude/voice-reply"
 let claudeOrange = NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1)
 let system = AudioObjectID(kAudioObjectSystemObject)
 
+// Everything on the island is white ink on black, at a few set strengths.
+func ink(_ alpha: CGFloat) -> NSColor { NSColor.white.withAlphaComponent(alpha) }
+
+// Two quieter text levels. The system's tertiary label is too faint to read at a glance.
+let softInk = ink(0.7)
+let faintInk = ink(0.52)
+
+extension NSView {
+  // Sets the layer's colour. A change on screen eases in; a view still being built just takes the colour.
+  func fill(_ color: NSColor?) {
+    guard let layer else { return }
+    if window != nil {
+      let ease = CABasicAnimation(keyPath: "backgroundColor")
+      ease.fromValue = layer.presentation()?.backgroundColor ?? layer.backgroundColor
+      ease.duration = 0.15
+      layer.add(ease, forKey: "fill")
+    }
+    layer.backgroundColor = color?.cgColor
+  }
+}
+
 // The Claude spark: uneven rays around a center, drawn in code so the app ships no image files.
 func spark(size: CGFloat, color: NSColor) -> NSImage {
   NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
@@ -227,9 +248,10 @@ final class MuteHUD {
   }
 }
 
-// Every button lights up under the pointer, so it is obvious what a click will hit.
+// Every button lights up under the pointer and dips while pressed, so it is obvious what a click will hit.
 class HoverButton: NSButton {
   var hovering = false { didSet { if hovering != oldValue { restyle() } } }
+  var pressed = false { didSet { if pressed != oldValue { restyle() } } }
 
   override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 
@@ -243,6 +265,12 @@ class HoverButton: NSButton {
   override func mouseEntered(with event: NSEvent) { hovering = true }
   override func mouseExited(with event: NSEvent) { hovering = false }
 
+  override func mouseDown(with event: NSEvent) {
+    pressed = true
+    super.mouseDown(with: event) // returns once the button is let go
+    pressed = false
+  }
+
   func restyle() {}
 }
 
@@ -253,48 +281,55 @@ func clearHover(_ view: NSView) {
   view.subviews.forEach(clearHover)
 }
 
-// A round icon button, such as ⊖ on a device or ⏹ on a port.
+// A round icon button, such as ⊖ on a device or ⏹ on a port. It stays faint until the pointer is near.
 final class IconButton: HoverButton {
   convenience init(symbol: String, label: String, target: AnyObject, action: Selector) {
     self.init(frame: .zero)
     self.target = target
     self.action = action
     image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-    symbolConfiguration = .init(pointSize: 15, weight: .regular)
+    symbolConfiguration = .init(pointSize: 14, weight: .regular)
     isBordered = false
     wantsLayer = true
-    layer?.cornerRadius = 15
-    widthAnchor.constraint(equalToConstant: 30).isActive = true
-    heightAnchor.constraint(equalToConstant: 30).isActive = true
+    layer?.cornerRadius = 14
+    widthAnchor.constraint(equalToConstant: 28).isActive = true
+    heightAnchor.constraint(equalToConstant: 28).isActive = true
     restyle()
   }
 
   override func restyle() {
-    contentTintColor = hovering ? .labelColor : .secondaryLabelColor
-    layer?.backgroundColor = hovering ? NSColor.labelColor.withAlphaComponent(0.15).cgColor : nil
+    contentTintColor = hovering ? .labelColor : faintInk
+    fill(pressed ? ink(0.22) : hovering ? ink(0.14) : nil)
   }
 }
 
-// Small text for rare actions such as Quit. It brightens under the pointer.
+// Small text with an icon for rare actions such as Quit. It brightens under the pointer.
 final class TextButton: HoverButton {
   var text = ""
 
-  convenience init(_ text: String, target: AnyObject, action: Selector) {
+  convenience init(_ text: String, symbol: String, target: AnyObject, action: Selector) {
     self.init(frame: .zero)
     self.text = text
     self.target = target
     self.action = action
+    image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+    symbolConfiguration = .init(pointSize: 10, weight: .semibold)
+    imagePosition = .imageLeading
+    imageHugsTitle = true
     isBordered = false
     restyle()
   }
 
   override func restyle() {
-    attributedTitle = NSAttributedString(string: text, attributes: [
-      .font: NSFont.systemFont(ofSize: 11), .foregroundColor: hovering ? NSColor.labelColor : .tertiaryLabelColor])
+    let color: NSColor = hovering ? .labelColor : faintInk
+    contentTintColor = color
+    attributedTitle = NSAttributedString(string: " " + text, attributes: [
+      .font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: color])
   }
 }
 
-// A big rounded button. The selected one turns solid white, like an active switch in Control Center.
+// One half of a two-way choice. The chosen half is a raised chip, like a system segmented control: clear
+// enough to read, quiet enough not to look like a button that does something now.
 final class Pill: HoverButton {
   var selected = false { didSet { restyle() } }
   var text = ""
@@ -306,26 +341,29 @@ final class Pill: HoverButton {
     self.action = action
     isBordered = false
     wantsLayer = true
-    layer?.cornerRadius = 12
-    heightAnchor.constraint(equalToConstant: 40).isActive = true
+    layer?.cornerRadius = Card.radius - 4
+    layer?.cornerCurve = .continuous
+    heightAnchor.constraint(equalToConstant: 32).isActive = true
     restyle()
   }
 
   override func restyle() {
-    let ink: NSColor = selected ? .black : .labelColor
     attributedTitle = NSAttributedString(string: text, attributes: [
-      .font: NSFont.systemFont(ofSize: 13, weight: selected ? .semibold : .medium), .foregroundColor: ink])
-    let rest = NSColor.labelColor.withAlphaComponent(hovering ? 0.18 : 0.1)
-    layer?.backgroundColor = (selected ? NSColor.white.withAlphaComponent(hovering ? 1 : 0.92) : rest).cgColor
+      .font: NSFont.systemFont(ofSize: 12, weight: selected ? .semibold : .medium),
+      .foregroundColor: selected ? NSColor.labelColor : softInk])
+    fill(selected ? ink(0.13) : pressed ? ink(0.1) : hovering ? ink(0.06) : nil)
+    setAccessibilityValue(selected ? "Selected" : "Not selected")
   }
 }
 
-// A big square switch in the style of Control Center: icon, name, and its state in words.
+// A big switch in the style of Control Center: a round icon badge at the top, then its name and its state
+// in words. On, the whole tile takes its colour and the badge turns white.
 final class Tile: HoverButton {
+  let badge = NSView()
   let icon = NSImageView()
   let name = NSTextField(labelWithString: "")
   let detail = NSTextField(labelWithString: "")
-  var fill: NSColor?
+  var color: NSColor?
 
   override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil } // labels never eat the click
 
@@ -336,44 +374,60 @@ final class Tile: HoverButton {
     title = ""
     isBordered = false
     wantsLayer = true
-    layer?.cornerRadius = 22
-    heightAnchor.constraint(equalToConstant: 108).isActive = true
+    layer?.cornerRadius = Card.radius
+    layer?.cornerCurve = .continuous
+    heightAnchor.constraint(equalToConstant: 88).isActive = true
+    badge.wantsLayer = true
+    badge.layer?.cornerRadius = 16
     // Every icon gets the same fixed box, so both tiles line up whatever the glyph.
     icon.imageScaling = .scaleProportionallyUpOrDown
-    icon.widthAnchor.constraint(equalToConstant: 30).isActive = true
-    icon.heightAnchor.constraint(equalToConstant: 30).isActive = true
-    name.font = .systemFont(ofSize: 14, weight: .semibold)
+    name.font = .systemFont(ofSize: 15, weight: .semibold)
     detail.font = .systemFont(ofSize: 12, weight: .medium)
-    let column = NSStackView(views: [icon, name, detail])
-    column.orientation = .vertical
-    column.spacing = 2
-    column.setCustomSpacing(10, after: icon)
-    column.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(column)
-    column.centerXAnchor.constraint(equalTo: centerXAnchor).isActive = true
-    column.centerYAnchor.constraint(equalTo: centerYAnchor).isActive = true
+    name.lineBreakMode = .byTruncatingTail
     detail.lineBreakMode = .byTruncatingTail
-    detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-    column.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -16).isActive = true
+    let words = NSStackView(views: [name, detail])
+    words.orientation = .vertical
+    words.alignment = .leading
+    words.spacing = 1
+    for view in [badge, icon, words] {
+      view.translatesAutoresizingMaskIntoConstraints = false
+      addSubview(view)
+    }
+    for label in [name, detail] { label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+    NSLayoutConstraint.activate([
+      badge.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+      badge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+      badge.widthAnchor.constraint(equalToConstant: 32),
+      badge.heightAnchor.constraint(equalToConstant: 32),
+      icon.centerXAnchor.constraint(equalTo: badge.centerXAnchor),
+      icon.centerYAnchor.constraint(equalTo: badge.centerYAnchor),
+      icon.widthAnchor.constraint(equalToConstant: 17),
+      icon.heightAnchor.constraint(equalToConstant: 17),
+      words.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
+      words.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+      words.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+    ])
   }
 
-  // fill nil means the switch is in its resting state. image must be a template so it takes the ink.
-  func show(image: NSImage, title: String, state text: String, fill: NSColor?) {
-    let ink: NSColor = fill == nil ? .labelColor : .white
+  // color nil means the switch is in its resting state. image must be a template so it takes the ink.
+  func show(image: NSImage, title: String, state text: String, fill color: NSColor?) {
     icon.image = image
-    icon.contentTintColor = ink
     name.stringValue = title
-    name.textColor = ink
     detail.stringValue = text
-    detail.textColor = ink.withAlphaComponent(0.75)
-    self.fill = fill
+    setAccessibilityLabel("\(title), \(text)")
+    self.color = color
     restyle()
   }
 
   override func restyle() {
-    let color = fill.map { hovering ? $0.blended(withFraction: 0.12, of: .white)! : $0 }
-      ?? NSColor.labelColor.withAlphaComponent(hovering ? 0.16 : 0.1)
-    layer?.backgroundColor = color.cgColor
+    let on = color != nil
+    icon.contentTintColor = color ?? .labelColor
+    name.textColor = on ? .white : .labelColor
+    detail.textColor = on ? NSColor.white.withAlphaComponent(0.95) : softInk
+    badge.fill(on ? .white : ink(0.16))
+    fill(color.map { $0.blended(withFraction: pressed ? 0.12 : 0, of: .black)!
+        .blended(withFraction: hovering && !pressed ? 0.1 : 0, of: .white)! }
+      ?? ink(pressed ? 0.28 : hovering ? 0.25 : 0.2))
   }
 }
 
@@ -387,14 +441,14 @@ final class PillSlider: NSView {
 
   static let iconSpace: CGFloat = 26 // room for the small and large A outside the track
 
-  override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 34) }
+  override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 30) }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
 
   func glyph(_ symbol: String, size: CGFloat) -> NSImage {
     NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!
       .withSymbolConfiguration(.init(pointSize: size, weight: .semibold)
-        .applying(.init(paletteColors: [.secondaryLabelColor])))!
+        .applying(.init(paletteColors: [softInk])))!
   }
 
   var trackRect: NSRect { bounds.insetBy(dx: Self.iconSpace, dy: 0) }
@@ -407,14 +461,14 @@ final class PillSlider: NSView {
 
   override func draw(_ dirtyRect: NSRect) {
     let track = trackRect, r = track.height / 2
-    NSColor.labelColor.withAlphaComponent(0.12).setFill()
+    ink(0.12).setFill()
     NSBezierPath(roundedRect: track, xRadius: r, yRadius: r).fill()
     let handle = x(of: index)
-    NSColor.white.withAlphaComponent(0.45).setFill()
+    ink(0.3).setFill()
     NSBezierPath(roundedRect: NSRect(x: track.minX, y: track.minY, width: handle + r - track.minX, height: track.height),
                  xRadius: r, yRadius: r).fill()
     // A dot for each stop ahead, so you can see where it will snap.
-    NSColor.labelColor.withAlphaComponent(0.35).setFill()
+    ink(0.35).setFill()
     for i in index + 1 ..< max(count, index + 1) {
       NSBezierPath(ovalIn: NSRect(x: x(of: i) - 2.5, y: r - 2.5, width: 5, height: 5)).fill()
     }
@@ -458,16 +512,51 @@ final class PillSlider: NSView {
 
 func headerText(_ title: String, hint: String? = nil) -> NSAttributedString {
   let text = NSMutableAttributedString(string: title, attributes: [
-    .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor])
+    .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: softInk])
   if let hint {
     text.append(NSAttributedString(string: "   \(hint)", attributes: [
-      .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
+      .font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: faintInk]))
   }
   return text
 }
 
-func sectionHeader(_ title: String) -> NSTextField {
-  NSTextField(labelWithAttributedString: headerText(title))
+func headerIcon(_ symbol: String) -> NSImageView {
+  let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!)
+  icon.symbolConfiguration = .init(pointSize: 11, weight: .semibold)
+  icon.contentTintColor = softInk
+  icon.widthAnchor.constraint(equalToConstant: 18).isActive = true // one box for every glyph, so titles line up
+  return icon
+}
+
+// A section title with its icon, set in from the edge to line up with the text in the card below it.
+func sectionHeader(_ title: String, symbol: String) -> NSStackView {
+  let header = NSStackView(views: [headerIcon(symbol), NSTextField(labelWithAttributedString: headerText(title))])
+  header.spacing = 6
+  header.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 0)
+  return header
+}
+
+// An inset block on the island that holds one group, such as a device list. Nothing is drawn to the island's edge.
+final class Card: NSView {
+  static let radius: CGFloat = 18 // the island's corner radius less its margin, so the corners nest
+
+  init(_ content: NSView, padding: CGFloat = 0) {
+    super.init(frame: .zero)
+    wantsLayer = true
+    layer?.cornerRadius = Self.radius
+    layer?.cornerCurve = .continuous
+    content.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(content)
+    NSLayoutConstraint.activate([
+      content.topAnchor.constraint(equalTo: topAnchor, constant: padding),
+      content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -padding),
+      content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: padding),
+      content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -padding),
+    ])
+    fill(ink(0.09))
+  }
+
+  required init?(coder: NSCoder) { nil }
 }
 
 // A section title that shows or hides the section below it, with a chevron at the right edge.
@@ -477,21 +566,24 @@ final class Disclosure: HoverButton {
 
   override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
 
-  convenience init(target: AnyObject, action: Selector) {
+  convenience init(symbol: String, target: AnyObject, action: Selector) {
     self.init(frame: .zero)
     self.target = target
     self.action = action
     title = ""
     isBordered = false
     wantsLayer = true
-    layer?.cornerRadius = 12
-    chevron.contentTintColor = .secondaryLabelColor
-    let row = NSStackView(views: [label, NSView(), chevron])
+    layer?.cornerRadius = Card.radius - 4
+    layer?.cornerCurve = .continuous
+    chevron.contentTintColor = softInk
+    chevron.symbolConfiguration = .init(pointSize: 10, weight: .bold)
+    let row = NSStackView(views: [headerIcon(symbol), label, NSView(), chevron])
+    row.spacing = 6
     row.translatesAutoresizingMaskIntoConstraints = false
     addSubview(row)
     NSLayoutConstraint.activate([
-      heightAnchor.constraint(equalToConstant: 40),
-      row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+      heightAnchor.constraint(equalToConstant: 34),
+      row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
       row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
       row.centerYAnchor.constraint(equalTo: centerYAnchor),
     ])
@@ -499,7 +591,7 @@ final class Disclosure: HoverButton {
   }
 
   override func restyle() {
-    layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(hovering ? 0.16 : 0.08).cgColor
+    fill(pressed ? ink(0.14) : hovering ? ink(0.08) : nil)
   }
 
   func show(_ text: NSAttributedString, expanded: Bool) {
@@ -510,8 +602,7 @@ final class Disclosure: HoverButton {
   }
 }
 
-// Inner lists never scroll themselves, so the wheel goes to the panel's own scroll view. Rows sit straight
-// on the glass, with a little inset so the pill of the row in use has room.
+// Inner lists never scroll themselves, so the wheel goes to the panel's own scroll view.
 final class PassScroll: NSScrollView {
   static let inset: CGFloat = 4
 
@@ -521,14 +612,15 @@ final class PassScroll: NSScrollView {
     drawsBackground = false
     hasVerticalScroller = false
     automaticallyAdjustsContentInsets = false
-    contentInsets = NSEdgeInsets(top: Self.inset, left: 0, bottom: Self.inset, right: 0)
+    // Every row brings 2 pt of spacing below it, which is half of the bottom margin already.
+    contentInsets = NSEdgeInsets(top: Self.inset, left: 0, bottom: Self.inset - 2, right: 0)
   }
 }
 
-// A list row: the device in use gets a soft pill, and any row lights up under the pointer.
+// A list row: the default device gets a soft pill, and any row lights up under the pointer.
 final class RowCell: NSStackView {
   var highlighted = false { didSet { restyle() } }
-  var hovering = false { didSet { restyle() } }
+  var hovering = false { didSet { if hovering != oldValue { restyle() } } }
 
   override func updateTrackingAreas() {
     super.updateTrackingAreas()
@@ -541,19 +633,29 @@ final class RowCell: NSStackView {
   override func mouseExited(with event: NSEvent) { hovering = false }
 
   func restyle() {
-    let alpha: CGFloat = highlighted ? 0.14 : hovering ? 0.07 : 0
-    layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(alpha).cgColor
+    fill(highlighted ? ink(0.09) : hovering ? ink(0.06) : nil)
   }
 }
 
-func rowCell(_ views: [NSView], highlighted: Bool = false) -> RowCell {
+// The row sits a little in from the card's edge, so its pill nests inside the card's corners.
+func rowCell(_ views: [NSView], highlighted: Bool = false) -> NSView {
   let cell = RowCell(views: views)
   cell.spacing = 8
-  cell.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 6)
+  cell.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 4)
   cell.wantsLayer = true
-  cell.layer?.cornerRadius = 12
+  cell.layer?.cornerRadius = Card.radius - PassScroll.inset
+  cell.layer?.cornerCurve = .continuous
   cell.highlighted = highlighted
-  return cell
+  cell.translatesAutoresizingMaskIntoConstraints = false
+  let row = NSView()
+  row.addSubview(cell)
+  NSLayoutConstraint.activate([
+    cell.topAnchor.constraint(equalTo: row.topAnchor),
+    cell.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+    cell.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: PassScroll.inset),
+    cell.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -PassScroll.inset),
+  ])
+  return row
 }
 
 // Takes clicks and keys without making Knob the active app.
@@ -565,11 +667,15 @@ final class FloatingPanel: NSPanel {
 final class HoverView: NSView {
   var onEnter: () -> Void = {}
   var onExit: () -> Void = {}
+  var area: NSRect? { didSet { if area != oldValue { updateTrackingAreas() } } } // nil tracks the whole view
+
+  override var isFlipped: Bool { true }
 
   override func updateTrackingAreas() {
     super.updateTrackingAreas()
     trackingAreas.forEach(removeTrackingArea)
-    addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+    let options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeAlways]
+    addTrackingArea(NSTrackingArea(rect: area ?? .zero, options: area == nil ? options.union(.inVisibleRect) : options,
                                    owner: self))
   }
 
@@ -588,10 +694,11 @@ final class PointerTable: NSTableView {
 
 // One ranked device list. Drag a row to reorder, or click it to make it first.
 final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-  static let rowHeight: CGFloat = 40
+  static let rowHeight: CGFloat = 34
   let kind: Kind
   let table = PointerTable()
   let scroll = PassScroll()
+  lazy var card = Card(scroll)
   let height: NSLayoutConstraint
   let onChange: () -> Void
   var order: [String] = []
@@ -634,7 +741,7 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     connected = kind.connected()
     current = kind.defaultDevice
     table.reloadData()
-    height.constant = CGFloat(order.count) * (Self.rowHeight + 2) + PassScroll.inset * 2
+    height.constant = CGFloat(order.count) * (Self.rowHeight + 2) + PassScroll.inset * 2 - 2
   }
 
   func move(from: Int, to: Int) {
@@ -674,23 +781,27 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let dim = id == nil || (unused && !active && apps == nil)
 
     let check = NSImageView(image: NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Default")!)
-    check.symbolConfiguration = .init(pointSize: 12, weight: .bold)
+    check.symbolConfiguration = .init(pointSize: 11, weight: .bold)
     check.contentTintColor = .labelColor
     check.alphaValue = active ? 1 : 0 // keeps its space, so names line up
     check.widthAnchor.constraint(equalToConstant: 14).isActive = true
 
     let name = NSTextField(labelWithString: names[uid] ?? uid)
     name.font = .systemFont(ofSize: 13, weight: active ? .semibold : .regular)
-    name.textColor = dim ? .tertiaryLabelColor : .labelColor
+    name.textColor = dim ? faintInk : .labelColor
     name.lineBreakMode = .byTruncatingTail
     name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    name.setContentHuggingPriority(.init(1), for: .horizontal) // takes all the room the status leaves
 
     // State in words, not only the checkmark. A mic an app has open says so, whichever mic is the default.
     let status = NSTextField(labelWithString: apps.map(openText)
       ?? (active ? "Default" : id == nil ? "Not connected" : unused ? "Skipped" : ""))
-    status.font = .systemFont(ofSize: 11)
-    status.textColor = apps != nil && unused ? .systemOrange : .tertiaryLabelColor
+    status.font = .systemFont(ofSize: 11, weight: .medium)
+    status.textColor = apps != nil && unused ? .systemOrange : dim ? faintInk : softInk
     status.lineBreakMode = .byTruncatingTail
+    // A long list of apps must not squeeze the device's name away; the tooltip has all of it.
+    status.widthAnchor.constraint(lessThanOrEqualToConstant: 150).isActive = true
+    status.toolTip = apps.map(openText)
 
     let use = IconButton(symbol: unused ? "plus.circle" : "minus.circle",
                          label: unused ? "Switch to it again" : "Never switch to it",
@@ -699,10 +810,7 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     use.toolTip = unused ? "Let Knob switch to this device again"
       : "Never switch to this device. Apps can still open it themselves."
 
-    let spacer = NSView()
-    spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-    let cell = rowCell([check, name, spacer, status, use], highlighted: active)
-    return cell
+    return rowCell([check, name, status, use], highlighted: active)
   }
 
   func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
@@ -783,14 +891,42 @@ func scanPorts() -> [Listener] {
 // Open ports, collapsed under a title that counts them. Click a row to open it in the browser,
 // or stop the process that holds it.
 final class PortList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-  static let rowHeight: CGFloat = 40
-  lazy var header = Disclosure(target: self, action: #selector(toggleExpanded))
+  static let rowHeight: CGFloat = 34
+  lazy var header = Disclosure(symbol: "network", target: self, action: #selector(toggleExpanded))
   var expanded = false
   let table = PointerTable()
   let scroll = PassScroll()
   let empty = NSTextField(labelWithString: "Nothing is listening")
+  let emptyRow = NSView()
+  // The title and its list share one card, so the list reads as the title opening up.
+  lazy var column: NSStackView = {
+    // The title sits a little in from the card's edge, like the rows under it.
+    let top = NSView()
+    header.translatesAutoresizingMaskIntoConstraints = false
+    top.addSubview(header)
+    empty.translatesAutoresizingMaskIntoConstraints = false
+    emptyRow.addSubview(empty)
+    let column = NSStackView(views: [top, scroll, emptyRow])
+    column.orientation = .vertical
+    column.alignment = .leading
+    column.spacing = 0
+    column.setCustomSpacing(6, after: top)
+    NSLayoutConstraint.activate([
+      header.topAnchor.constraint(equalTo: top.topAnchor, constant: PassScroll.inset),
+      header.bottomAnchor.constraint(equalTo: top.bottomAnchor),
+      header.leadingAnchor.constraint(equalTo: top.leadingAnchor, constant: PassScroll.inset),
+      header.trailingAnchor.constraint(equalTo: top.trailingAnchor, constant: -PassScroll.inset),
+      empty.topAnchor.constraint(equalTo: emptyRow.topAnchor),
+      empty.bottomAnchor.constraint(equalTo: emptyRow.bottomAnchor, constant: -12),
+      empty.leadingAnchor.constraint(equalTo: emptyRow.leadingAnchor, constant: 16),
+      top.widthAnchor.constraint(equalTo: column.widthAnchor),
+      scroll.widthAnchor.constraint(equalTo: column.widthAnchor),
+    ])
+    return column
+  }()
+  lazy var card = Card(column)
   let height: NSLayoutConstraint
-  let onChange: () -> Void
+  let onChange: (Bool) -> Void
   var ports: [Listener] = []
   let age: DateComponentsFormatter = {
     let format = DateComponentsFormatter()
@@ -800,7 +936,7 @@ final class PortList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     return format
   }()
 
-  init(onChange: @escaping () -> Void) {
+  init(onChange: @escaping (Bool) -> Void) {
     self.onChange = onChange
     height = scroll.heightAnchor.constraint(equalToConstant: 0)
     super.init()
@@ -817,25 +953,26 @@ final class PortList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     table.action = #selector(clicked)
     scroll.documentView = table
     scroll.styleAsList()
+    scroll.contentInsets.top = 0 // the title above already keeps its distance
     height.isActive = true
-    empty.font = .systemFont(ofSize: 13)
-    empty.textColor = .tertiaryLabelColor
+    empty.font = .systemFont(ofSize: 12)
+    empty.textColor = faintInk
     update()
   }
 
-  func update() {
+  func update(animated: Bool = false) {
     let count = ports.count
     header.show(headerText("Open ports", hint: count == 0 ? "None running" : "\(count) running"), expanded: expanded)
     scroll.isHidden = !expanded || ports.isEmpty
-    (header.superview as? NSStackView)?.setCustomSpacing(expanded ? 8 : 18, after: header)
-    empty.isHidden = !expanded || !ports.isEmpty
-    height.constant = CGFloat(count) * (Self.rowHeight + 2) + PassScroll.inset * 2
-    onChange()
+    emptyRow.isHidden = !expanded || !ports.isEmpty
+    height.constant = CGFloat(count) * (Self.rowHeight + 2) + PassScroll.inset - 2
+    column.edgeInsets.bottom = expanded ? 0 : PassScroll.inset
+    onChange(animated)
   }
 
   @objc func toggleExpanded() {
     expanded.toggle()
-    update()
+    update(animated: true)
     // Bring the opened list into view when the panel has to scroll.
     if expanded { DispatchQueue.main.async { self.scroll.scrollToVisible(self.scroll.bounds) } }
   }
@@ -873,20 +1010,20 @@ final class PortList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let listener = ports[row]
     let number = NSTextField(labelWithString: ":\(listener.port)")
     number.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
-    number.widthAnchor.constraint(equalToConstant: 56).isActive = true
+    number.widthAnchor.constraint(equalToConstant: 52).isActive = true
 
     // The folder it was started in says which project it belongs to; the home folder or / says nothing.
     let folder = [NSHomeDirectory(), "/"].contains(listener.cwd) ? "" : (listener.cwd as NSString).lastPathComponent
     let name = NSTextField(labelWithString: folder.isEmpty ? listener.name : "\(listener.name) · \(folder)")
     name.font = .systemFont(ofSize: 13)
-    name.textColor = .secondaryLabelColor
+    name.textColor = softInk
     name.lineBreakMode = .byTruncatingTail
     name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
     let uptime = Date().timeIntervalSince(listener.started)
     let since = NSTextField(labelWithString: uptime < 60 ? "Just now" : age.string(from: uptime) ?? "")
-    since.font = .systemFont(ofSize: 11)
-    since.textColor = .tertiaryLabelColor
+    since.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+    since.textColor = faintInk
 
     let open = IconButton(symbol: "arrow.up.forward.app", label: "Open in browser", target: self, action: #selector(openPort(_:)))
     open.toolTip = "Open localhost:\(listener.port) in your browser"
@@ -939,7 +1076,11 @@ func scales(of display: CGDirectDisplayID) -> [Scale] {
 // for a moment, and macOS keeps it for the next time the display is plugged in.
 final class DisplayScale: NSObject {
   let value = NSTextField(labelWithString: "")
-  lazy var header = NSStackView(views: [sectionHeader("External display"), NSView(), value])
+  lazy var header: NSStackView = {
+    let header = NSStackView(views: [sectionHeader("External display", symbol: "display"), NSView(), value])
+    header.edgeInsets.right = 12 // the same edge the lists keep their status words to
+    return header
+  }()
   let slider = PillSlider()
   var display: CGDirectDisplayID?
   var stops: [Scale] = []
@@ -953,8 +1094,8 @@ final class DisplayScale: NSObject {
     super.init()
     slider.onMove = { [weak self] in self?.show($0) }
     slider.onRelease = { [weak self] in self?.apply($0) }
-    value.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-    value.textColor = .secondaryLabelColor
+    value.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+    value.textColor = softInk
   }
 
   // Read from the system each time, so a change made in System Settings shows here too.
@@ -987,18 +1128,97 @@ final class DisplayScale: NSObject {
   }
 }
 
+// The island's outline, top down: flat against the top of the screen, a small flare where it meets that edge,
+// and round corners below. Open and closed outlines have the same points, so one can grow into the other.
+func islandPath(_ rect: CGRect, radius r: CGFloat, flare e: CGFloat) -> CGPath {
+  let k: CGFloat = 0.5523 // makes a cubic curve a quarter circle
+  let rect = CGRect(x: rect.minX, y: rect.minY - 2, width: rect.width, height: rect.height + 2) // top edge off screen
+  let path = CGMutablePath()
+  path.move(to: CGPoint(x: rect.minX - e, y: rect.minY))
+  path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.minY + e), control: CGPoint(x: rect.minX, y: rect.minY))
+  path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - r))
+  path.addCurve(to: CGPoint(x: rect.minX + r, y: rect.maxY), control1: CGPoint(x: rect.minX, y: rect.maxY - r + k * r),
+                control2: CGPoint(x: rect.minX + r - k * r, y: rect.maxY))
+  path.addLine(to: CGPoint(x: rect.maxX - r, y: rect.maxY))
+  path.addCurve(to: CGPoint(x: rect.maxX, y: rect.maxY - r), control1: CGPoint(x: rect.maxX - r + k * r, y: rect.maxY),
+                control2: CGPoint(x: rect.maxX, y: rect.maxY - r + k * r))
+  path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + e))
+  path.addQuadCurve(to: CGPoint(x: rect.maxX + e, y: rect.minY), control: CGPoint(x: rect.maxX, y: rect.minY))
+  path.closeSubpath()
+  return path
+}
+
+// A spring given the way Apple describes them: how much it overshoots (1 is none) and how fast it answers.
+func spring(_ keyPath: String, damping: CGFloat, response: CGFloat) -> CASpringAnimation {
+  let spring = CASpringAnimation(keyPath: keyPath)
+  spring.mass = 1
+  spring.stiffness = pow(2 * .pi / response, 2)
+  spring.damping = 4 * .pi * damping / response
+  spring.duration = spring.settlingDuration
+  return spring
+}
+
+// The window around the island is clear. A click that lands on it, beside the island, is a click outside.
+final class ClearView: NSView {
+  var onClick: (NSPoint) -> Void = { _ in }
+
+  override var isFlipped: Bool { true }
+  override func mouseDown(with event: NSEvent) { onClick(convert(event.locationInWindow, from: nil)) }
+}
+
+func displayID(of screen: NSScreen) -> CGDirectDisplayID {
+  (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! NSNumber).uint32Value
+}
+
+// The black island itself, drawn as one shape so it can grow out of the notch.
+final class IslandView: NSView {
+  let shape = CAShapeLayer()
+
+  override var isFlipped: Bool { true }
+
+  override init(frame: NSRect) {
+    super.init(frame: frame)
+    wantsLayer = true
+    shape.fillColor = .black
+    // Apple's island has a key line, so the black shape still has an edge over dark content.
+    shape.strokeColor = NSColor.white.withAlphaComponent(0.14).cgColor
+    shape.shadowRadius = 14
+    shape.shadowOffset = CGSize(width: 0, height: 8)
+    layer?.addSublayer(shape)
+  }
+
+  required init?(coder: NSCoder) { nil }
+}
+
 final class App: NSObject, NSApplicationDelegate {
-  // A glass card floats just under the notch. A black strip sits in the notch so hovering it opens the panel,
-  // and the panel window spans the gap between them so the pointer can cross it.
-  let notchTrigger = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
-                                   backing: .buffered, defer: true)
+  // The panel is a black island that grows out of the notch, the way the Dynamic Island grows out of the iPhone's
+  // camera. Each screen has a black strip to hover: the notch itself on the laptop, a small tab at the top centre
+  // of a screen without one. The panel's window is clear and as tall as the screen allows; only the island
+  // inside it changes size.
+  var triggers: [FloatingPanel] = []
   let notchPanel = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                  backing: .buffered, defer: true)
-  let notchBody = HoverView()
-  let glass = NSGlassEffectView()
-  static let gap: CGFloat = 6
-  var notch = NSRect.zero
-  lazy var glassTop = glass.topAnchor.constraint(equalTo: notchBody.topAnchor)
+  let island = IslandView()
+  let notchBody = HoverView() // everything on the island, cut to its outline
+  let content = FlippedView() // what fades and settles into place as the island opens
+  let outline = CAShapeLayer()
+  let scrollFade = CAGradientLayer()
+  static let width: CGFloat = 380
+  static let margin: CGFloat = 16 // between the island's edge and what is on it
+  static let radius = Card.radius + margin
+  static let shadowRoom: CGFloat = 48 // clear window around the island, for its shadow and its flares
+  // Fast, since it opens on every hover: the shape is all but there in a quarter of a second, with a small
+  // overshoot on the way out of the notch and none on the way back.
+  static let openDamping: CGFloat = 0.78
+  static let openResponse: CGFloat = 0.26
+  static let closeResponse: CGFloat = 0.2
+  var notch = NSRect.zero // the strip the island hangs from, on the screen it is on
+  var home: CGDirectDisplayID? // that screen
+  var islandHeight: CGFloat = 0
+  var closing = false
+  var still: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+  lazy var contentTop = outer.topAnchor.constraint(equalTo: content.topAnchor)
+  lazy var contentHeight = outer.heightAnchor.constraint(equalToConstant: 0)
   let sparkTemplate: NSImage = {
     let image = spark(size: 30, color: .black)
     image.isTemplate = true
@@ -1009,7 +1229,7 @@ final class App: NSObject, NSApplicationDelegate {
   let stack = NSStackView()
   let outer = NSScrollView()
   var lists: [DeviceList] = []
-  lazy var ports = PortList { [weak self] in self?.resize() }
+  lazy var ports = PortList { [weak self] in self?.resize(animated: $0) }
   var portTimer: Timer?
   let displayScale = DisplayScale()
   lazy var f5Dictation = Pill("Dictation", target: self, action: #selector(changeF5Mode(_:)))
@@ -1035,47 +1255,47 @@ final class App: NSObject, NSApplicationDelegate {
     stack.orientation = .vertical
     stack.alignment = .leading
     stack.spacing = 8
-    stack.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 10, right: 14)
-    stack.widthAnchor.constraint(equalToConstant: 360).isActive = true
+    stack.edgeInsets = NSEdgeInsets(top: 2, left: Self.margin, bottom: 0, right: Self.margin)
+    stack.widthAnchor.constraint(equalToConstant: Self.width).isActive = true
 
     let tiles = NSStackView(views: [voiceTile, micTile])
     tiles.distribution = .fillEqually
-    tiles.spacing = 10
+    tiles.spacing = 8
     stack.addArrangedSubview(tiles)
-    stack.setCustomSpacing(18, after: tiles)
+    stack.setCustomSpacing(20, after: tiles)
 
     for kind in kinds {
-      let header = sectionHeader(kind.title)
+      let header = sectionHeader(kind.title, symbol: kind.key == "output" ? "speaker.wave.2.fill" : "mic.fill")
       let list = DeviceList(kind: kind) { [weak self] in self?.applyPriority() }
       lists.append(list)
       stack.addArrangedSubview(header)
-      stack.addArrangedSubview(list.scroll)
-      stack.setCustomSpacing(16, after: list.scroll)
+      stack.addArrangedSubview(list.card)
+      stack.setCustomSpacing(20, after: list.card)
     }
 
-    stack.addArrangedSubview(ports.header)
-    stack.addArrangedSubview(ports.scroll)
-    stack.addArrangedSubview(ports.empty)
-    stack.setCustomSpacing(16, after: ports.scroll)
-    stack.setCustomSpacing(16, after: ports.empty)
+    stack.addArrangedSubview(ports.card)
+    stack.setCustomSpacing(20, after: ports.card)
 
     stack.addArrangedSubview(displayScale.header)
     stack.addArrangedSubview(displayScale.slider)
-    stack.setCustomSpacing(16, after: displayScale.slider)
+    stack.setCustomSpacing(20, after: displayScale.slider)
 
-    let f5Title = sectionHeader("F5 key does")
+    let f5Title = sectionHeader("F5 key does", symbol: "keyboard")
     f5Title.toolTip = "The 🎤 key on Mac laptops"
     let f5Row = NSStackView(views: [f5Dictation, f5Mute])
     f5Row.distribution = .fillEqually
-    f5Row.spacing = 8
+    f5Row.spacing = 4
+    let f5Card = Card(f5Row, padding: 4)
     stack.addArrangedSubview(f5Title)
-    stack.addArrangedSubview(f5Row)
-    stack.setCustomSpacing(16, after: f5Row)
+    stack.addArrangedSubview(f5Card)
+    stack.setCustomSpacing(10, after: f5Card)
 
-    let quit = TextButton("Quit Knob", target: NSApp, action: #selector(NSApplication.terminate(_:)))
-    stack.addArrangedSubview(quit)
-    for view in [tiles, f5Row, ports.header, ports.scroll, displayScale.header, displayScale.slider] + lists.map(\.scroll) {
-      view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -28).isActive = true
+    let footer = NSStackView()
+    footer.addView(TextButton("Quit Knob", symbol: "power", target: NSApp, action: #selector(NSApplication.terminate(_:))),
+                   in: .center)
+    stack.addArrangedSubview(footer)
+    for view in [tiles, f5Card, ports.card, displayScale.header, displayScale.slider, footer] + lists.map(\.card) {
+      view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -2 * Self.margin).isActive = true
     }
     // The panel scrolls once it would be taller than the screen.
     let document = FlippedView()
@@ -1086,6 +1306,13 @@ final class App: NSObject, NSApplicationDelegate {
     outer.drawsBackground = false
     outer.hasVerticalScroller = true
     outer.autohidesScrollers = true
+    outer.scrollerStyle = .overlay
+    outer.automaticallyAdjustsContentInsets = false
+    outer.wantsLayer = true
+    outer.translatesAutoresizingMaskIntoConstraints = false
+    // What scrolls out at the bottom fades away, so a cut row reads as "there is more".
+    scrollFade.colors = [NSColor.black.cgColor, NSColor.black.cgColor, NSColor.clear.cgColor]
+    content.addSubview(outer)
     NSLayoutConstraint.activate([
       stack.topAnchor.constraint(equalTo: document.topAnchor),
       stack.bottomAnchor.constraint(equalTo: document.bottomAnchor),
@@ -1094,39 +1321,39 @@ final class App: NSObject, NSApplicationDelegate {
       document.topAnchor.constraint(equalTo: outer.contentView.topAnchor),
       document.leadingAnchor.constraint(equalTo: outer.contentView.leadingAnchor),
       document.widthAnchor.constraint(equalTo: outer.contentView.widthAnchor),
+      contentTop, contentHeight,
+      outer.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+      outer.widthAnchor.constraint(equalToConstant: Self.width),
     ])
-    for panel in [notchTrigger, notchPanel] {
-      panel.isOpaque = false
-      panel.backgroundColor = .clear
-      panel.hasShadow = false
-      panel.level = .statusBar // above the menu bar, so the panel reads as the notch growing
-      panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-    }
-    let strip = HoverView()
-    strip.wantsLayer = true
-    strip.layer?.backgroundColor = NSColor.black.cgColor
-    strip.onEnter = { [weak self] in self?.showNotchPanel() }
-    notchTrigger.contentView = strip
+    notchPanel.isOpaque = false
+    notchPanel.backgroundColor = .clear
+    notchPanel.hasShadow = false
+    // Above the menu bar, so the panel reads as the notch growing, and above every hover strip.
+    notchPanel.level = NSWindow.Level(NSWindow.Level.statusBar.rawValue + 1)
+    notchPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+    notchPanel.appearance = NSAppearance(named: .darkAqua) // the island is black whatever the system look
     notchBody.onExit = { [weak self] in self?.hideNotchPanelIfLeft() }
-    notchPanel.contentView = notchBody
-    glass.cornerRadius = 26
-    glass.contentView = outer
-    glass.translatesAutoresizingMaskIntoConstraints = false
-    notchBody.addSubview(glass)
-    NSLayoutConstraint.activate([
-      glassTop,
-      glass.bottomAnchor.constraint(equalTo: notchBody.bottomAnchor),
-      glass.leadingAnchor.constraint(equalTo: notchBody.leadingAnchor),
-      glass.trailingAnchor.constraint(equalTo: notchBody.trailingAnchor),
-    ])
-    notchPanel.appearance = NSAppearance(named: .darkAqua)
-    placeNotch()
+    notchBody.wantsLayer = true
+    notchBody.layer?.mask = outline
+    content.wantsLayer = true
+    content.autoresizingMask = [.width, .height]
+    notchBody.addSubview(content)
+    let root = ClearView()
+    root.onClick = { [weak self] point in
+      guard let self, !self.openRect.contains(point) else { return }
+      self.hideNotchPanel()
+    }
+    for view in [island, notchBody] {
+      view.autoresizingMask = [.width, .height]
+      root.addSubview(view)
+    }
+    notchPanel.contentView = root
+    placeTriggers()
     NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                            object: nil, queue: .main) { [weak self] _ in
-      self?.placeNotch()
+      self?.placeTriggers()
       self?.refresh()
     }
-
 
     // macOS switches to whatever was plugged in last; put our pick back on every device or default change.
     for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultOutputDevice,
@@ -1272,46 +1499,205 @@ final class App: NSObject, NSApplicationDelegate {
     watchMics()
   }
 
-  var isShowing: Bool { notchPanel.isVisible }
+  var isShowing: Bool { notchPanel.isVisible && !closing }
 
-  // The notch is the gap between the two usable areas at the top of a notched screen. With the lid
-  // closed there is no notch, so there is nothing to hover until it opens again.
-  func placeNotch() {
-    guard let screen = NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil }),
-          let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else {
-      hideNotchPanel()
-      notch = .zero
-      return notchTrigger.orderOut(nil)
+  // Where the island hangs on a screen. On the laptop it is the notch: the gap between the two usable areas at
+  // the top. A screen without a notch gets a small tab at its top centre instead.
+  func strip(on screen: NSScreen) -> NSRect {
+    if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+      let width = screen.frame.width - left.width - right.width
+      return NSRect(x: screen.frame.midX - width / 2, y: screen.frame.maxY - screen.safeAreaInsets.top,
+                    width: width, height: screen.safeAreaInsets.top)
     }
-    notch = NSRect(x: left.maxX, y: screen.frame.maxY - screen.safeAreaInsets.top,
-                   width: right.minX - left.maxX, height: screen.safeAreaInsets.top)
-    glassTop.constant = notch.height + Self.gap
-    notchTrigger.setFrame(notch, display: true)
-    notchTrigger.orderFrontRegardless()
-    if isShowing { resize() } // a new display scale moves the notch, and the panel should stay open under the pointer
+    return .zero
   }
 
-  func showNotchPanel() {
-    guard !notchPanel.isVisible, notch != .zero else { return }
+  // A black strip over the notch that opens the island when the pointer reaches it.
+  func trigger(at frame: NSRect, open: @escaping () -> Void) -> FloatingPanel {
+    let trigger = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                                backing: .buffered, defer: true)
+    trigger.isOpaque = false
+    trigger.backgroundColor = .clear
+    trigger.hasShadow = false
+    trigger.level = .statusBar
+    trigger.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+    let strip = HoverView()
+    strip.wantsLayer = true
+    strip.layer?.backgroundColor = .black
+    strip.onEnter = open
+    trigger.contentView = strip
+    trigger.setFrame(frame, display: true)
+    trigger.orderFrontRegardless()
+    return trigger
+  }
+
+  // One hover strip per screen, rebuilt whenever a display is plugged in, unplugged, moved or rescaled.
+  func placeTriggers() {
+    triggers.forEach { $0.orderOut(nil) }
+    triggers = NSScreen.screens.filter { $0.auxiliaryTopLeftArea != nil }.map { screen in
+      trigger(at: strip(on: screen)) { [weak self] in
+        self?.showNotchPanel(on: screen)
+      }
+    }
+    // An open island stays on its screen while that screen is still there, and goes at once when it is not.
+    guard notchPanel.isVisible else { return }
+    if let screen = NSScreen.screens.first(where: { displayID(of: $0) == home }) {
+      attach(to: screen)
+      resize()
+    } else {
+      dropPanel()
+    }
+  }
+
+  // Hangs the panel's window from the top of a screen, as tall as the island may ever get there.
+  func attach(to screen: NSScreen) {
+    home = displayID(of: screen)
+    notch = strip(on: screen)
+    contentTop.constant = notch.height + 6
+    let width = Self.width + 2 * Self.shadowRoom
+    let height = screen.frame.maxY - screen.visibleFrame.minY
+    notchPanel.setFrame(NSRect(x: notch.midX - width / 2, y: screen.frame.maxY - height, width: width, height: height),
+                        display: true)
+  }
+
+  // Outlines in the window's top-down coordinates: the strip itself, and the open island.
+  var closedRect: CGRect {
+    CGRect(x: Self.shadowRoom + (Self.width - notch.width) / 2, y: 0, width: notch.width, height: notch.height)
+  }
+  var openRect: CGRect { CGRect(x: Self.shadowRoom, y: 0, width: Self.width, height: islandHeight) }
+  var closedPath: CGPath { islandPath(closedRect, radius: min(10, notch.height / 2), flare: 0) }
+  var openPath: CGPath { islandPath(openRect, radius: Self.radius, flare: 10) }
+
+  // Moves the island's outline, and the cut-out of what is on it, to a new shape. The move starts from what
+  // is on screen now, so opening, closing and resizing can interrupt each other at any moment.
+  func morph(to path: CGPath, damping: CGFloat, response: CGFloat, animated: Bool) {
+    for layer in [island.shape, outline] {
+      if animated {
+        let move = spring("path", damping: damping, response: response)
+        // Mid-flight it starts from what is on screen; at rest, from the shape just set.
+        move.fromValue = layer.animation(forKey: "morph") == nil ? layer.path : layer.presentation()?.path
+        layer.add(move, forKey: "morph")
+      } else {
+        layer.removeAnimation(forKey: "morph")
+      }
+      layer.path = path
+    }
+  }
+
+  // What is on the island grows out from under the strip and fades in a beat behind the shape, so the moving
+  // edge never cuts through words. It leaves ahead of the shape. The key line and the shadow come and go with it,
+  // since the closed island must look like nothing but the notch.
+  func reveal(_ shown: Bool, animated: Bool) {
+    guard let layer = content.layer else { return }
+    let edges: [(String, Float)] = [("shadowOpacity", shown ? 0.35 : 0), ("lineWidth", shown ? 1 : 0)]
+    if animated {
+      let moving = layer.animation(forKey: "fade") != nil
+      let fade = CABasicAnimation(keyPath: "opacity")
+      fade.fromValue = moving ? layer.presentation()?.opacity : layer.opacity
+      fade.duration = shown ? 0.12 : 0.08
+      fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+      if shown, !moving {
+        fade.beginTime = layer.convertTime(CACurrentMediaTime(), from: nil) + 0.05
+        fade.fillMode = .backwards
+      }
+      layer.add(fade, forKey: "fade")
+      for (key, value) in edges {
+        let edge = CABasicAnimation(keyPath: key)
+        edge.fromValue = island.shape.animation(forKey: key) == nil ? island.shape.value(forKeyPath: key)
+          : island.shape.presentation()?.value(forKeyPath: key)
+        edge.duration = shown ? 0.12 : 0.2
+        // The value goes in first and without its own built-in animation, which would replace this one.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        island.shape.setValue(value, forKeyPath: key)
+        CATransaction.commit()
+        island.shape.add(edge, forKey: key)
+      }
+      let center = content.bounds.midX
+      var small = CATransform3DMakeTranslation(center, 0, 0)
+      small = CATransform3DScale(small, 0.8, 0.8, 1)
+      small = CATransform3DTranslate(small, -center, 0, 0)
+      let settle = shown ? spring("transform", damping: Self.openDamping, response: Self.openResponse)
+        : spring("transform", damping: 1, response: Self.closeResponse)
+      settle.fromValue = moving ? layer.presentation()?.transform : shown ? small : CATransform3DIdentity
+      settle.toValue = shown ? CATransform3DIdentity : small
+      layer.add(settle, forKey: "settle")
+    } else {
+      edges.forEach { island.shape.setValue($0.1, forKeyPath: $0.0) }
+    }
+    layer.opacity = shown ? 1 : 0
+  }
+
+  // Opens like the Dynamic Island: the black shape springs out of the strip with a small overshoot, and the
+  // controls are live from the first frame. With Reduce Motion on, the whole island fades in instead.
+  func showNotchPanel(on screen: NSScreen) {
+    let moved = home != displayID(of: screen)
+    guard !notchPanel.isVisible || closing || moved else { return }
+    if moved { dropPanel() } // it was open on another screen
+    let wasHidden = !notchPanel.isVisible
+    closing = false
+    notchPanel.ignoresMouseEvents = false
+    attach(to: screen)
     willShowPanel()
-    notchPanel.alphaValue = 0
-    notchPanel.orderFrontRegardless()
-    NSAnimationContext.runAnimationGroup { $0.duration = 0.15; notchPanel.animator().alphaValue = 1 }
+    if still {
+      morph(to: openPath, damping: 1, response: 0.3, animated: false)
+      reveal(true, animated: false)
+      if wasHidden { notchPanel.alphaValue = 0 }
+      notchPanel.orderFrontRegardless()
+      NSAnimationContext.runAnimationGroup { $0.duration = 0.2; notchPanel.animator().alphaValue = 1 }
+      return
+    }
+    notchPanel.alphaValue = 1
+    if wasHidden {
+      morph(to: closedPath, damping: 1, response: 0.3, animated: false)
+      reveal(false, animated: false)
+      notchPanel.orderFrontRegardless()
+    }
+    morph(to: openPath, damping: Self.openDamping, response: Self.openResponse, animated: true)
+    reveal(true, animated: true)
   }
 
-  // Closes once the pointer is out of both the panel and the notch, unless a drag is still going.
+  // Closes once the pointer is out of both the island and its strip, unless a drag is still going.
   func hideNotchPanelIfLeft() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-      guard let self, self.notchPanel.isVisible, NSEvent.pressedMouseButtons == 0 else { return }
+      guard let self, self.isShowing, NSEvent.pressedMouseButtons == 0 else { return }
       let mouse = NSEvent.mouseLocation
-      if !self.notchPanel.frame.contains(mouse), !self.notch.contains(mouse) { self.hideNotchPanel() }
+      let frame = self.notchPanel.frame
+      let island = NSRect(x: frame.minX + Self.shadowRoom, y: frame.maxY - self.islandHeight,
+                          width: Self.width, height: self.islandHeight)
+      if !island.contains(mouse), !self.notch.contains(mouse) { self.hideNotchPanel() }
     }
   }
 
+  // Closes the way it opened, in reverse and without the overshoot: back into the strip. Nothing on it can be
+  // clicked on the way out.
   func hideNotchPanel() {
-    guard notchPanel.isVisible else { return }
-    notchPanel.orderOut(nil)
+    guard isShowing else { return }
+    closing = true
+    notchPanel.ignoresMouseEvents = true
     didHidePanel()
+    let done = { [weak self] in
+      guard let self, self.closing else { return } // opened again meanwhile
+      self.closing = false
+      self.notchPanel.orderOut(nil)
+    }
+    if still {
+      NSAnimationContext.runAnimationGroup({ $0.duration = 0.15; notchPanel.animator().alphaValue = 0 },
+                                           completionHandler: done)
+      return
+    }
+    CATransaction.begin()
+    CATransaction.setCompletionBlock(done)
+    morph(to: closedPath, damping: 1, response: Self.closeResponse, animated: true)
+    reveal(false, animated: true)
+    CATransaction.commit()
+  }
+
+  // Takes the island away at once, such as when its screen is unplugged.
+  func dropPanel() {
+    if isShowing { didHidePanel() }
+    closing = false
+    notchPanel.orderOut(nil)
   }
 
   func willShowPanel() {
@@ -1353,7 +1739,7 @@ final class App: NSObject, NSApplicationDelegate {
     guard full || isShowing else { return }
     let on = isOn
     voiceTile.show(image: sparkTemplate, title: "Claude voice",
-                   state: on ? "Speaks replies" : "Silent", fill: on ? claudeOrange : nil)
+                   state: on ? "Speaks replies" : "Silent", fill: on ? claudeOrange.blended(withFraction: 0.2, of: .black) : nil)
     // The tile speaks for every connected mic. "Muted" needs all of them muted, and a mic with no mute
     // control is counted in words, so the tile never claims more than is true.
     let mics = kinds[1].connected()
@@ -1369,7 +1755,7 @@ final class App: NSObject, NSApplicationDelegate {
       : recording ? openText(apps) : "On"
     let symbol = NSImage(systemSymbolName: muted ? "mic.slash.fill" : "mic.fill", accessibilityDescription: nil)!
     micTile.show(image: symbol, title: mics.count > 1 ? "Microphones" : "Microphone", state: state,
-                 fill: muted ? .systemRed : nil)
+                 fill: muted ? NSColor.systemRed.blended(withFraction: 0.16, of: .black) : nil)
     micTile.toolTip = mics.keys.sorted().map { uid in
       "\(name(of: uid)): " + (isMuted(mics[uid]!).map { $0 ? "muted" : "on" } ?? "can't mute")
     }.joined(separator: "\n")
@@ -1378,13 +1764,24 @@ final class App: NSObject, NSApplicationDelegate {
     ports.update()
   }
 
-  // As tall as the content, but never taller than the screen below the menu bar.
-  func resize() {
-    let fit = stack.fittingSize
-    guard let screen = NSScreen.screens.first(where: { $0.frame.intersects(notch) }) else { return }
-    let height = notch.height + Self.gap + min(fit.height, screen.visibleFrame.height - 30)
-    notchPanel.setFrame(NSRect(x: notch.midX - fit.width / 2, y: notch.maxY - height, width: fit.width, height: height),
-                        display: true)
+  // As tall as what is on it, but never taller than the screen. A change while open, such as the port list
+  // opening, moves the island's edge with the same spring.
+  func resize(animated: Bool = false) {
+    guard notch != .zero else { return }
+    let fit = stack.fittingSize.height
+    let room = notchPanel.frame.height - contentTop.constant - Self.margin - Self.shadowRoom
+    contentHeight.constant = max(0, min(fit, room))
+    islandHeight = contentTop.constant + contentHeight.constant + Self.margin
+    scrollFade.frame = CGRect(x: 0, y: 0, width: Self.width, height: contentHeight.constant)
+    scrollFade.locations = [0, NSNumber(value: 1 - 28 / max(contentHeight.constant, 28)), 1]
+    outer.layer?.mask = fit > room ? scrollFade : nil
+    outer.contentInsets.bottom = fit > room ? 28 : 0 // so the last row can scroll clear of the fade
+    notchBody.area = openRect
+    // A refresh that leaves the height alone must not cut into the opening spring.
+    guard isShowing, island.shape.path != openPath else { return }
+    let moving = island.shape.animation(forKey: "morph") != nil
+    morph(to: openPath, damping: 1, response: Self.closeResponse, animated: (animated || moving) && !still)
+    hideNotchPanelIfLeft() // the island may have shrunk from under the pointer
   }
 }
 
