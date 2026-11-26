@@ -1509,21 +1509,29 @@ final class App: NSObject, NSApplicationDelegate {
       return NSRect(x: screen.frame.midX - width / 2, y: screen.frame.maxY - screen.safeAreaInsets.top,
                     width: width, height: screen.safeAreaInsets.top)
     }
-    return .zero
+    return NSRect(x: screen.frame.midX - 60, y: screen.frame.maxY - 10, width: 120, height: 10)
   }
 
-  // A black strip over the notch that opens the island when the pointer reaches it.
-  func trigger(at frame: NSRect, open: @escaping () -> Void) -> FloatingPanel {
+  // A black strip that opens the island when the pointer reaches it. Over the notch it is invisible. As a tab
+  // on a screen without a notch it has to be seen: round below, with the island's key line, and it stays out
+  // of full-screen apps.
+  func trigger(at frame: NSRect, tab: Bool, open: @escaping () -> Void) -> FloatingPanel {
     let trigger = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                 backing: .buffered, defer: true)
     trigger.isOpaque = false
     trigger.backgroundColor = .clear
     trigger.hasShadow = false
     trigger.level = .statusBar
-    trigger.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+    trigger.collectionBehavior = tab ? [.canJoinAllSpaces, .stationary] : [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
     let strip = HoverView()
     strip.wantsLayer = true
     strip.layer?.backgroundColor = .black
+    if tab {
+      strip.layer?.cornerRadius = 6
+      strip.layer?.maskedCorners = [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+      strip.layer?.borderWidth = 1
+      strip.layer?.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
+    }
     strip.onEnter = open
     trigger.contentView = strip
     trigger.setFrame(frame, display: true)
@@ -1534,8 +1542,8 @@ final class App: NSObject, NSApplicationDelegate {
   // One hover strip per screen, rebuilt whenever a display is plugged in, unplugged, moved or rescaled.
   func placeTriggers() {
     triggers.forEach { $0.orderOut(nil) }
-    triggers = NSScreen.screens.filter { $0.auxiliaryTopLeftArea != nil }.map { screen in
-      trigger(at: strip(on: screen)) { [weak self] in
+    triggers = NSScreen.screens.map { screen in
+      trigger(at: strip(on: screen), tab: screen.auxiliaryTopLeftArea == nil) { [weak self] in
         self?.showNotchPanel(on: screen)
       }
     }
