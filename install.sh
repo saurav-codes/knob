@@ -27,7 +27,11 @@ cat > "$agent" <<PLIST
 <key>Label</key><string>$label</string>
 <key>ProgramArguments</key><array><string>$app/Contents/MacOS/Knob</string></array>
 <key>RunAtLoad</key><true/>
+<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 </dict></plist>
 PLIST
-launchctl bootstrap "gui/$(id -u)" "$agent" 2>/dev/null || true # already loaded after the first install
-launchctl kickstart -k "gui/$(id -u)/$label"
+# Load the agent fresh, so a changed plist takes effect. KeepAlive restarts Knob after a crash, not after Quit.
+if launchctl bootout "gui/$(id -u)/$label" 2>/dev/null; then
+  while launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; do sleep 0.1; done
+fi
+launchctl bootstrap "gui/$(id -u)" "$agent"
