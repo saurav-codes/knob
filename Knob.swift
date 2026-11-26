@@ -1,9 +1,10 @@
 // Knob: a tiny notch utility. A switch for Claude's spoken replies, speaker and mic priority lists,
 // an external display scale slider, and an F5 mic mute key. The voice hook speaks only while ~/.claude/voice-reply exists.
-// Audio work runs only when CoreAudio reports a device change, and the mute key is a system hotkey; nothing polls.
+// Audio work runs only when CoreAudio reports a change to a device, and the mute key is a system hotkey; nothing polls.
 import AppKit
 import Carbon.HIToolbox
 import CoreAudio
+import IOKit.hid
 
 let flag = NSHomeDirectory() + "/.claude/voice-reply"
 let claudeOrange = NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1)
@@ -40,6 +41,60 @@ func string(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> Str
   var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
   guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else { return nil }
   return value?.takeRetainedValue() as String?
+}
+
+func number(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector,
+            _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> UInt32? {
+  var addr = address(selector, scope)
+  var value = UInt32(0)
+  var size = UInt32(MemoryLayout<UInt32>.size)
+  guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else { return nil }
+  return value
+}
+
+func objects(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector,
+             _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> [AudioObjectID] {
+  var addr = address(selector, scope)
+  var size = UInt32(0)
+  guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr, size > 0 else { return [] }
+  var result = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+  guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &result) == noErr else { return [] }
+  return result
+}
+
+// nil when the mic has no mute control, such as an iPhone used as a microphone.
+func isMuted(_ id: AudioDeviceID) -> Bool? {
+  number(id, kAudioDevicePropertyMute, kAudioObjectPropertyScopeInput).map { $0 != 0 }
+}
+
+func setMuted(_ id: AudioDeviceID, _ muted: Bool) -> Bool {
+  var addr = address(kAudioDevicePropertyMute, kAudioObjectPropertyScopeInput)
+  var value = UInt32(muted ? 1 : 0)
+  return AudioObjectSetPropertyData(id, &addr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value) == noErr
+}
+
+// The apps recording right now, by the mic each one has open. An app picks its own mic, so this can be
+// a mic that is not the system default.
+func recorders() -> [AudioDeviceID: [String]] {
+  var result: [AudioDeviceID: [String]] = [:]
+  for process in objects(system, kAudioHardwarePropertyProcessObjectList)
+  where number(process, kAudioProcessPropertyIsRunningInput) == 1 {
+    guard let pid = number(process, kAudioProcessPropertyPID).map(pid_t.init) else { continue }
+    var buffer = [CChar](repeating: 0, count: Int(MAXCOMLEN) + 1)
+    proc_name(pid, &buffer, UInt32(buffer.count))
+    // A command line tool has no app name, and some have no process name either; the mic is still open.
+    let name = [NSRunningApplication(processIdentifier: pid)?.localizedName, String(cString: buffer)]
+      .compactMap { $0 }.first { !$0.isEmpty }
+    for device in objects(process, kAudioProcessPropertyDevices, kAudioObjectPropertyScopeInput) {
+      let known = result[device] ?? []
+      result[device] = known + (name.map { known.contains($0) ? [] : [$0] } ?? [])
+    }
+  }
+  return result
+}
+
+func openText(_ apps: [String]) -> String {
+  apps.isEmpty ? "Open" : "Open in " + apps.joined(separator: ", ")
 }
 
 // Speakers or microphones: which default it controls, which streams a device needs, where its order is saved.
@@ -90,8 +145,8 @@ struct Kind {
     nonmutating set { UserDefaults.standard.set(newValue, forKey: key) }
   }
 
-  // Devices never to switch to, such as a headset's poor mic. Kept per kind, since a headset's
-  // speakers and mic share one UID. Stored order keeps them after every device still in use.
+  // Devices never to switch to, such as a headset's poor mic. Apps can still open them; Knob only keeps
+  // them from becoming the default. Stored order keeps them after every device still in use.
   var off: Set<String> {
     get { Set(UserDefaults.standard.stringArray(forKey: key + "Off") ?? []) }
     nonmutating set { UserDefaults.standard.set(newValue.sorted(), forKey: key + "Off") }
@@ -107,14 +162,15 @@ let kinds = [
 
 // The F5 dictation key sends HID consumer usage 0xCF. Remapping it to F20 stops dictation and lets
 // a plain Carbon hotkey catch it, which needs no Accessibility or Input Monitoring permission.
-func remapDictationKey(_ on: Bool) {
-  let mapping = on ? "[{\"HIDKeyboardModifierMappingSrc\":0xC000000CF,\"HIDKeyboardModifierMappingDst\":0x70000006F}]" : "[]"
-  let hidutil = Process()
-  hidutil.executableURL = URL(fileURLWithPath: "/usr/bin/hidutil")
-  hidutil.arguments = ["property", "--set", "{\"UserKeyMapping\":\(mapping)}"]
-  hidutil.standardOutput = FileHandle.nullDevice
-  try? hidutil.run()
-  hidutil.waitUntilExit()
+// Only Knob's own entry is added or removed, so key remaps made elsewhere stay.
+func remapDictationKey(_ on: Bool) -> Bool {
+  let dictation = 0xC000000CF, f20 = 0x70000006F
+  let client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
+  let key = kIOHIDUserKeyUsageMapKey as CFString
+  var mapping = (IOHIDEventSystemClientCopyProperty(client, key) as? [[String: Int]] ?? [])
+    .filter { $0[kIOHIDKeyboardModifierMappingSrcKey] != dictation }
+  if on { mapping.append([kIOHIDKeyboardModifierMappingSrcKey: dictation, kIOHIDKeyboardModifierMappingDstKey: f20]) }
+  return IOHIDEventSystemClientSetProperty(client, key, mapping as CFArray)
 }
 
 var onMuteKey: () -> Void = {}
@@ -123,8 +179,8 @@ var onMuteKey: () -> Void = {}
 final class MuteHUD {
   let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
                       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-  let icon = NSImageView(frame: NSRect(x: 50, y: 62, width: 100, height: 100))
-  let label = NSTextField(labelWithString: "")
+  let icon = NSImageView(frame: NSRect(x: 50, y: 70, width: 100, height: 100))
+  let label = NSTextField(wrappingLabelWithString: "")
   var shownAt = Date.distantPast
 
   init() {
@@ -139,18 +195,19 @@ final class MuteHUD {
     blur.wantsLayer = true
     blur.layer?.cornerRadius = 28
     icon.symbolConfiguration = .init(pointSize: 76, weight: .medium)
-    label.frame = NSRect(x: 0, y: 24, width: 200, height: 26)
+    label.frame = NSRect(x: 12, y: 14, width: 176, height: 50)
     label.alignment = .center
-    label.font = .systemFont(ofSize: 20, weight: .semibold)
+    label.maximumNumberOfLines = 2
     blur.addSubview(icon)
     blur.addSubview(label)
     panel.contentView = blur
   }
 
-  func show(muted: Bool?) {
-    icon.image = NSImage(systemSymbolName: muted == false ? "mic.fill" : "mic.slash.fill", accessibilityDescription: nil)
-    icon.contentTintColor = muted == true ? .systemRed : .labelColor
-    label.stringValue = muted.map { $0 ? "Mic muted" : "Mic on" } ?? "Can't mute this mic"
+  func show(symbol: String, text: String, tint: NSColor = .labelColor) {
+    icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+    icon.contentTintColor = tint
+    label.stringValue = text
+    label.font = .systemFont(ofSize: text.count > 12 ? 14 : 20, weight: .semibold) // a long warning takes two lines
     // The built-in display, or the main one when the lid is closed.
     let builtIn = NSScreen.screens.first {
       CGDisplayIsBuiltin(($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! NSNumber).uint32Value) != 0
@@ -295,6 +352,9 @@ final class Tile: HoverButton {
     addSubview(column)
     column.centerXAnchor.constraint(equalTo: centerXAnchor).isActive = true
     column.centerYAnchor.constraint(equalTo: centerYAnchor).isActive = true
+    detail.lineBreakMode = .byTruncatingTail
+    detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    column.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -16).isActive = true
   }
 
   // fill nil means the switch is in its resting state. image must be a template so it takes the ink.
@@ -538,6 +598,7 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
   var connected: [String: AudioDeviceID] = [:]
   var current = AudioDeviceID(0)
   var names: [String: String] = [:]
+  var open: [AudioDeviceID: [String]] = [:] // mics an app is recording from, with the app names
   var off: Set<String> = []
   var inUse: Int { order.count - off.count } // rows above the "never use" ones
 
@@ -565,8 +626,9 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     height.isActive = true
   }
 
-  func reload(names: [String: String]) {
+  func reload(names: [String: String], open: [AudioDeviceID: [String]]) {
     self.names = names
+    self.open = open
     order = kind.order
     off = kind.off
     connected = kind.connected()
@@ -607,10 +669,11 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let uid = order[row]
     let id = connected[uid]
     let unused = off.contains(uid)
-    let active = id != nil && id == current && !unused
-    let dim = id == nil || unused
+    let active = id != nil && id == current // the real default, even when it is one Knob never switches to
+    let apps = id.flatMap { open[$0] }
+    let dim = id == nil || (unused && !active && apps == nil)
 
-    let check = NSImageView(image: NSImage(systemSymbolName: "checkmark", accessibilityDescription: "In use")!)
+    let check = NSImageView(image: NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Default")!)
     check.symbolConfiguration = .init(pointSize: 12, weight: .bold)
     check.contentTintColor = .labelColor
     check.alphaValue = active ? 1 : 0 // keeps its space, so names line up
@@ -622,15 +685,19 @@ final class DeviceList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     name.lineBreakMode = .byTruncatingTail
     name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-    // State in words, not only the checkmark.
-    let status = NSTextField(labelWithString: unused ? "Never used" : active ? "In use" : id == nil ? "Not connected" : "")
+    // State in words, not only the checkmark. A mic an app has open says so, whichever mic is the default.
+    let status = NSTextField(labelWithString: apps.map(openText)
+      ?? (active ? "Default" : id == nil ? "Not connected" : unused ? "Skipped" : ""))
     status.font = .systemFont(ofSize: 11)
-    status.textColor = .tertiaryLabelColor
+    status.textColor = apps != nil && unused ? .systemOrange : .tertiaryLabelColor
+    status.lineBreakMode = .byTruncatingTail
 
-    let use = IconButton(symbol: unused ? "plus.circle" : "minus.circle", label: unused ? "Use again" : "Never use",
+    let use = IconButton(symbol: unused ? "plus.circle" : "minus.circle",
+                         label: unused ? "Switch to it again" : "Never switch to it",
                          target: self, action: #selector(toggleUse(_:)))
     use.tag = row
-    use.toolTip = unused ? "Use this device again" : "Never use this device"
+    use.toolTip = unused ? "Let Knob switch to this device again"
+      : "Never switch to this device. Apps can still open it themselves."
 
     let spacer = NSView()
     spacer.setContentHuggingPriority(.init(1), for: .horizontal)
@@ -946,10 +1013,16 @@ final class App: NSObject, NSApplicationDelegate {
   var portTimer: Timer?
   let displayScale = DisplayScale()
   lazy var f5Dictation = Pill("Dictation", target: self, action: #selector(changeF5Mode(_:)))
-  lazy var f5Mute = Pill("Mute mic", target: self, action: #selector(changeF5Mode(_:)))
+  lazy var f5Mute = Pill("Mutes mics", target: self, action: #selector(changeF5Mode(_:)))
   lazy var hud = MuteHUD()
-  var hotKeys: [EventHotKeyRef?] = []
-  var mutedMic: AudioDeviceID? // set while Knob holds the mic muted, so the mute can follow a device switch
+  var hotKeys: [EventHotKeyRef] = []
+  // Mics Knob muted, by UID. Saved, so a mute left by a crash is undone at the next launch.
+  var held: Set<String> {
+    get { Set(UserDefaults.standard.stringArray(forKey: "mutedMics") ?? []) }
+    set { UserDefaults.standard.set(newValue.sorted(), forKey: "mutedMics") }
+  }
+  var watched: Set<AudioDeviceID> = [] // mics with a listener on their mute and their use
+  var warned: Set<AudioDeviceID> = [] // skipped mics an app has open, already announced
   var outsideClicks: Any?
   var names: [String: String] {
     get { UserDefaults.standard.dictionary(forKey: "names") as? [String: String] ?? [:] }
@@ -990,12 +1063,11 @@ final class App: NSObject, NSApplicationDelegate {
     stack.addArrangedSubview(displayScale.slider)
     stack.setCustomSpacing(16, after: displayScale.slider)
 
-    let f5Title = sectionHeader("F5 key")
+    let f5Title = sectionHeader("F5 key does")
     f5Title.toolTip = "The 🎤 key on Mac laptops"
     let f5Row = NSStackView(views: [f5Dictation, f5Mute])
     f5Row.distribution = .fillEqually
     f5Row.spacing = 8
-    showF5Mode()
     stack.addArrangedSubview(f5Title)
     stack.addArrangedSubview(f5Row)
     stack.setCustomSpacing(16, after: f5Row)
@@ -1065,67 +1137,115 @@ final class App: NSObject, NSApplicationDelegate {
     var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
     InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in onMuteKey(); return noErr }, 1, &spec, nil, nil)
     onMuteKey = { [weak self] in self?.toggleMic() }
+    releaseMute() // a run that crashed while muted left its mics muted
     applyF5Mode()
     applyPriority()
   }
 
+  // Quitting leaves the system as it was: mics unmuted, F5 back to dictation.
   func applicationWillTerminate(_ notification: Notification) {
-    if !hotKeys.isEmpty { remapDictationKey(false) } // give F5 back to dictation
+    releaseMute()
+    _ = remapDictationKey(false)
   }
 
   @objc func changeF5Mode(_ sender: Pill) {
     UserDefaults.standard.set(sender === f5Mute, forKey: "f5Mute")
-    showF5Mode()
     applyF5Mode()
   }
 
-  func showF5Mode() {
-    let mute = UserDefaults.standard.bool(forKey: "f5Mute")
-    f5Dictation.selected = !mute
-    f5Mute.selected = mute
-  }
-
+  // F5 mutes only while both the hotkey and the key remap are really in place, and the pills show that,
+  // not the saved wish.
   func applyF5Mode() {
-    let mute = UserDefaults.standard.bool(forKey: "f5Mute")
-    // Only touch the key mapping when Knob owns it, so dictation mode leaves other mappings alone.
-    if mute || !hotKeys.isEmpty { remapDictationKey(mute) }
-    if mute, hotKeys.isEmpty {
+    if UserDefaults.standard.bool(forKey: "f5Mute"), hotKeys.isEmpty {
       // Keyboards may or may not flag a function key with fn, and Carbon matches modifiers exactly.
-      hotKeys = [0, UInt32(kEventKeyModifierFnMask)].map { modifiers in
+      hotKeys = [0, UInt32(kEventKeyModifierFnMask)].compactMap { modifiers in
         var ref: EventHotKeyRef?
-        RegisterEventHotKey(UInt32(kVK_F20), modifiers, EventHotKeyID(signature: 0x4B4E4F42, id: modifiers),
-                            GetApplicationEventTarget(), 0, &ref)
-        return ref
+        let status = RegisterEventHotKey(UInt32(kVK_F20), modifiers, EventHotKeyID(signature: 0x4B4E4F42, id: modifiers),
+                                         GetApplicationEventTarget(), 0, &ref)
+        return status == noErr ? ref : nil
       }
-    } else if !mute, !hotKeys.isEmpty {
-      hotKeys.compactMap { $0 }.forEach { UnregisterEventHotKey($0) }
-      hotKeys = []
     }
+    if !UserDefaults.standard.bool(forKey: "f5Mute") || hotKeys.isEmpty || !remapDictationKey(true) {
+      hotKeys.forEach { UnregisterEventHotKey($0) }
+      hotKeys = []
+      _ = remapDictationKey(false)
+    }
+    f5Dictation.selected = hotKeys.isEmpty
+    f5Mute.selected = !hotKeys.isEmpty
   }
 
-  // nil when the device has no settable mute control.
-  func isMuted(_ id: AudioDeviceID) -> Bool? {
-    var addr = address(kAudioDevicePropertyMute, kAudioObjectPropertyScopeInput)
-    var value = UInt32(0)
-    var size = UInt32(MemoryLayout<UInt32>.size)
-    guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else { return nil }
-    return value != 0
-  }
-
-  func setMuted(_ id: AudioDeviceID, _ muted: Bool) -> Bool {
-    var addr = address(kAudioDevicePropertyMute, kAudioObjectPropertyScopeInput)
-    var value = UInt32(muted ? 1 : 0)
-    return AudioObjectSetPropertyData(id, &addr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value) == noErr
-  }
+  func name(of uid: String) -> String { names[uid] ?? uid }
 
   @objc func toggleMicFromPanel() { toggleMic() }
 
+  // Mute means every connected mic, not only the default one: an app may record from any of them.
+  // The state is read from the devices each time, since System Settings or a call app may have changed it.
   func toggleMic() {
-    // Read the device, not a cached flag: System Settings or a call app may have changed it.
-    let mic = kinds[1].defaultDevice
-    guard let muted = isMuted(mic), setMuted(mic, !muted) else { return hud.show(muted: nil) }
-    mutedMic = muted ? nil : mic
-    hud.show(muted: !muted)
+    let mics = kinds[1].connected()
+    let states = mics.compactMapValues(isMuted) // only mics that have a mute control
+    if states.isEmpty { return hud.show(symbol: "mic.fill", text: "Can't mute this mic") }
+    if states.values.allSatisfy({ $0 }) {
+      let stuck = states.keys.filter { !setMuted(mics[$0]!, false) }
+      held = []
+      stuck.isEmpty ? hud.show(symbol: "mic.fill", text: "Mic on")
+        : hud.show(symbol: "mic.slash.fill", text: "Can't unmute \(stuck.map(name).joined(separator: ", "))", tint: .systemRed)
+    } else {
+      let muted = states.filter { !$0.value && setMuted(mics[$0.key]!, true) }.keys
+      held.formUnion(muted)
+      let live = mics.keys.filter { isMuted(mics[$0]!) != true }
+      live.isEmpty ? hud.show(symbol: "mic.slash.fill", text: "Mic muted", tint: .systemRed)
+        : hud.show(symbol: "exclamationmark.triangle.fill",
+                   text: "Can't mute \(live.map(name).joined(separator: ", "))", tint: .systemOrange)
+    }
+    refresh()
+  }
+
+  // Unmutes the mics Knob muted, and only those.
+  func releaseMute() {
+    let mics = kinds[1].connected()
+    held.compactMap { mics[$0] }.forEach { _ = setMuted($0, false) }
+    held = []
+  }
+
+  // Listens to every connected mic, since CoreAudio reports mute and use per device. A mic that connects
+  // while Knob holds the mute is muted too, or named in a warning when it has no mute control.
+  func watchMics() {
+    let mics = kinds[1].connected()
+    for (uid, id) in mics where !watched.contains(id) {
+      for var addr in [address(kAudioDevicePropertyMute, kAudioObjectPropertyScopeInput),
+                       address(kAudioDevicePropertyDeviceIsRunningSomewhere)] {
+        AudioObjectAddPropertyListenerBlock(id, &addr, .main) { [weak self] _, _ in self?.micChanged() }
+      }
+      guard !held.isEmpty, isMuted(id) != true else { continue }
+      if setMuted(id, true) {
+        held.insert(uid)
+      } else {
+        hud.show(symbol: "exclamationmark.triangle.fill", text: "Can't mute \(name(of: uid))", tint: .systemOrange)
+      }
+    }
+    watched = Set(mics.values)
+    micChanged()
+  }
+
+  // A mic was muted, unmuted, opened or closed, by Knob or by anything else.
+  func micChanged() {
+    let mics = kinds[1].connected()
+    // Unmuted somewhere else: Knob lets go of that mic and says so, since you are no longer muted.
+    let released = held.filter { uid in mics[uid].map { isMuted($0) == false } ?? false }
+    if !released.isEmpty {
+      held.subtract(released)
+      hud.show(symbol: "mic.fill", text: "\(released.map(name).joined(separator: ", ")) unmuted")
+    }
+    // An app opened a mic Knob never switches to. Bluetooth headphones drop to call quality while their mic is open.
+    let off = kinds[1].off
+    let open = recorders()
+    let skipped = mics.filter { off.contains($0.key) && number($0.value, kAudioDevicePropertyDeviceIsRunningSomewhere) == 1 }
+    for (uid, id) in skipped where !warned.contains(id) {
+      let apps = open[id] ?? []
+      hud.show(symbol: "exclamationmark.triangle.fill",
+               text: "\(apps.isEmpty ? "An app" : apps.joined(separator: ", ")) opened \(name(of: uid))", tint: .systemOrange)
+    }
+    warned = Set(skipped.values)
     refresh()
   }
 
@@ -1149,12 +1269,7 @@ final class App: NSObject, NSApplicationDelegate {
         kind.defaultDevice = connected[best]!
       }
     }
-    // Mute follows you to whichever mic becomes the default, unless it was unmuted elsewhere meanwhile.
-    let mic = kinds[1].defaultDevice
-    if let old = mutedMic, old != mic {
-      mutedMic = isMuted(old) != false && setMuted(mic, true) ? mic : nil
-    }
-    refresh()
+    watchMics()
   }
 
   var isShowing: Bool { notchPanel.isVisible }
@@ -1239,11 +1354,26 @@ final class App: NSObject, NSApplicationDelegate {
     let on = isOn
     voiceTile.show(image: sparkTemplate, title: "Claude voice",
                    state: on ? "Speaks replies" : "Silent", fill: on ? claudeOrange : nil)
-    let muted = isMuted(kinds[1].defaultDevice)
-    let symbol = NSImage(systemSymbolName: muted == false ? "mic.fill" : "mic.slash.fill", accessibilityDescription: nil)!
-    micTile.show(image: symbol, title: "Microphone", state: muted.map { $0 ? "Muted" : "Live" } ?? "Can't mute",
-                 fill: muted == true ? .systemRed : nil)
-    lists.forEach { $0.reload(names: names) }
+    // The tile speaks for every connected mic. "Muted" needs all of them muted, and a mic with no mute
+    // control is counted in words, so the tile never claims more than is true.
+    let mics = kinds[1].connected()
+    let states = mics.compactMapValues(isMuted)
+    let muted = !states.isEmpty && states.values.allSatisfy { $0 }
+    let fixed = mics.count - states.count
+    let open = recorders()
+    let recording = mics.values.contains { open[$0] != nil }
+    let apps = Set(mics.values.flatMap { open[$0] ?? [] }).sorted()
+    let state = states.isEmpty ? "Can't mute"
+      : muted ? (fixed == 0 ? "Muted" : "Muted, \(fixed) can't mute")
+      : states.values.contains(true) ? "Partly muted"
+      : recording ? openText(apps) : "On"
+    let symbol = NSImage(systemSymbolName: muted ? "mic.slash.fill" : "mic.fill", accessibilityDescription: nil)!
+    micTile.show(image: symbol, title: mics.count > 1 ? "Microphones" : "Microphone", state: state,
+                 fill: muted ? .systemRed : nil)
+    micTile.toolTip = mics.keys.sorted().map { uid in
+      "\(name(of: uid)): " + (isMuted(mics[uid]!).map { $0 ? "muted" : "on" } ?? "can't mute")
+    }.joined(separator: "\n")
+    lists.forEach { list in list.reload(names: names, open: list.kind.key == "input" ? open : [:]) }
     displayScale.reload()
     ports.update()
   }
