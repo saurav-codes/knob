@@ -1,12 +1,13 @@
 # Knob
 
-A tiny macOS notch utility for the few audio switches you touch every day. Hover the notch and a Liquid Glass panel with big, obvious controls appears under it.
+A tiny macOS notch utility for the few audio switches you touch every day. Hover the notch and a black island with big, obvious controls grows out of it, the way the Dynamic Island does on an iPhone.
 
 - **Claude voice switch.** One big button turns Claude Code's spoken replies on or off.
 - **Speaker and mic priority.** Drag your devices into the order you want. Knob always switches to the highest ranked device that is connected, so plugging in a new device never steals your audio. Speakers and microphone have separate lists, so you can keep AirPods for sound and the MacBook mic for calls. Click ⊖ on a device, such as earphones with a poor mic, and Knob never switches to it again, even when macOS does on connect. ⊕ brings it back. An app can still open that mic by itself, so Knob shows "Open in" with the app's name on any mic being recorded from, and warns on screen when it is one you skipped. Bluetooth headphones drop to call quality while their mic is open.
 - **Open ports.** A collapsed section whose title counts what is running. Expand it to see every TCP port your own processes listen on, such as dev servers an agent started and forgot, with the folder it was started in and how long it has run. Click a row to open it in your browser, or ⏹ to stop the process. macOS services like AirPlay are hidden.
 - **External display size.** Slide between every size your external monitor offers, from native to twice as big. Each stop says whether it is Sharp or Soft, and macOS keeps your pick for the next time you plug in.
-- **Lives in the notch.** No menu bar icon. Hover the notch to open the panel, and move the pointer away or click elsewhere to close it. Needs a Mac with a notch, and is out of reach while the lid is closed.
+- **Lives in the notch.** No menu bar icon. Hover the notch to open the panel, and move the pointer away or click elsewhere to close it. It springs open and slides back into the notch, or just fades when Reduce Motion is on.
+- **On every screen.** A screen without a notch, such as an external monitor, gets a small black tab at its top centre. Hover it and the same island opens there, so Knob is still in reach with the lid closed. The tab hides while an app is full screen.
 - **Mic mute tile and F5 key.** Click the Microphone tile, or press F5 (the dictation key on Mac laptops), to mute or unmute every connected mic at once, since an app may record from any of them. A large icon on the laptop screen confirms the change, and names any mic that has no mute control. Quitting Knob unmutes what it muted. A switch in the panel gives F5 back to macOS dictation.
 
 ## Lightweight by design
