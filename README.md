@@ -3,15 +3,15 @@
 A tiny macOS notch utility for the few audio switches you touch every day. Hover the notch and a Liquid Glass panel with big, obvious controls appears under it.
 
 - **Claude voice switch.** One big button turns Claude Code's spoken replies on or off.
-- **Speaker and mic priority.** Drag your devices into the order you want. Knob always switches to the highest ranked device that is connected, so plugging in a new device never steals your audio. Speakers and microphone have separate lists, so you can keep AirPods for sound and the MacBook mic for calls. Click ⊖ on a device, such as earphones with a poor mic, and Knob never switches to it again, even when macOS does on connect. ⊕ brings it back.
+- **Speaker and mic priority.** Drag your devices into the order you want. Knob always switches to the highest ranked device that is connected, so plugging in a new device never steals your audio. Speakers and microphone have separate lists, so you can keep AirPods for sound and the MacBook mic for calls. Click ⊖ on a device, such as earphones with a poor mic, and Knob never switches to it again, even when macOS does on connect. ⊕ brings it back. An app can still open that mic by itself, so Knob shows "Open in" with the app's name on any mic being recorded from, and warns on screen when it is one you skipped. Bluetooth headphones drop to call quality while their mic is open.
 - **Open ports.** A collapsed section whose title counts what is running. Expand it to see every TCP port your own processes listen on, such as dev servers an agent started and forgot, with the folder it was started in and how long it has run. Click a row to open it in your browser, or ⏹ to stop the process. macOS services like AirPlay are hidden.
 - **External display size.** Slide between every size your external monitor offers, from native to twice as big. Each stop says whether it is Sharp or Soft, and macOS keeps your pick for the next time you plug in.
 - **Lives in the notch.** No menu bar icon. Hover the notch to open the panel, and move the pointer away or click elsewhere to close it. Needs a Mac with a notch, and is out of reach while the lid is closed.
-- **Mic mute tile and F5 key.** Click the Microphone tile, or press F5 (the dictation key on Mac laptops), to mute or unmute whichever mic is in use. A large icon on the laptop screen confirms the change. A switch in the panel gives F5 back to macOS dictation.
+- **Mic mute tile and F5 key.** Click the Microphone tile, or press F5 (the dictation key on Mac laptops), to mute or unmute every connected mic at once, since an app may record from any of them. A large icon on the laptop screen confirms the change, and names any mic that has no mute control. Quitting Knob unmutes what it muted. A switch in the panel gives F5 back to macOS dictation.
 
 ## Lightweight by design
 
-Knob does nothing until CoreAudio reports a device change or you click it. Ports are scanned with `lsof` when the panel opens and every 2 minutes while it stays open, never while it is closed.
+Knob does nothing until CoreAudio reports a change (a device, a mute, a mic being opened) or you click it. Ports are scanned with `lsof` when the panel opens and every 2 minutes while it stays open, never while it is closed.
 
 Measured on an M2 MacBook Air: 0% CPU and zero wakeups while idle, about 13 MB of memory, and no disk writes except when your device order changes.
 
@@ -25,7 +25,7 @@ cd knob
 ./install.sh
 ```
 
-This builds `~/Applications/Knob.app` and starts it at login. Run `./install.sh` again after pulling changes.
+This builds `~/Applications/Knob.app`, starts it at login, and restarts it if it crashes. Run `./install.sh` again after pulling changes.
 
 To remove it:
 
@@ -46,7 +46,7 @@ Turning the voice off also stops any reply that is already playing.
 
 ## How the F5 key works
 
-In "Mute mic" mode, Knob uses `hidutil` to remap the dictation key to F20 and catches F20 with a global hotkey, so it needs no Accessibility or Input Monitoring permission. Switching to "Dictation", quitting Knob, or removing it clears the remap. The remap applies to all keyboards until then.
+In "Mutes mics" mode, Knob adds one entry to the system key mapping that remaps the dictation key to F20 and catches F20 with a global hotkey, so it needs no Accessibility or Input Monitoring permission. Switching to "Dictation", quitting Knob, or removing it removes that entry and leaves other key remaps alone. The remap applies to all keyboards until then.
 
 See [DESIGN.md](DESIGN.md) for the design rules the app follows.
 
